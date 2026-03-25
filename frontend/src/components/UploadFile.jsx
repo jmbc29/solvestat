@@ -1,35 +1,45 @@
 import { useDropzone } from 'react-dropzone'
 import axios from 'axios'
 import { useCallback, useState } from 'react'
-import { ArrowUpTrayIcon, InboxIcon, ArrowUpCircleIcon } from '@heroicons/react/24/outline'
 
-function UploadFile({ onUpload }) {
-  const [status, setStatus] = useState('Click to upload or drag a file')
+function UploadFile({ onUpload, compact }) {
+  const [status, setStatus] = useState(null)
 
   const onDrop = useCallback(async (acceptedFiles) => {
     const file = acceptedFiles[0]
     if (!file) return
-
     if (!file.name.endsWith('.csv')) {
-      setStatus('⚠️ Please upload a .csv file')
+      setStatus('⚠️ .csv only')
       return
     }
 
-    setStatus(`Uploading ${file.name}...`)
+    setStatus('...')
     const formData = new FormData()
     formData.append('file', file)
 
     try {
       const res = await axios.post('http://localhost:8000/upload/', formData)
-      setStatus('✅ Upload successful!')
-      if (onUpload) onUpload(res.data)
+      setStatus(null)
+      if (onUpload) onUpload(res.data, file.name)
     } catch (err) {
       console.error(err)
-      setStatus('❌ Upload failed.')
+      setStatus('❌')
     }
   }, [onUpload])
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop })
+  const { getRootProps, getInputProps } = useDropzone({ onDrop })
+
+  if (compact) {
+    return (
+      <div
+        {...getRootProps()}
+        className="px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg cursor-pointer text-gray-300 whitespace-nowrap transition"
+      >
+        <input {...getInputProps()} />
+        {status ?? '+ Add File'}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -38,10 +48,8 @@ function UploadFile({ onUpload }) {
     >
       <input {...getInputProps()} />
       <div className="flex flex-col items-center justify-center text-gray-300 space-y-3">
-       <img src="/UploadFileLogo.svg" alt="Upload Logo" style={{ width: '100px', height: '100px' }} className="my-4" />
-        <p className="text-sm font-semibold">
-          {isDragActive ? '📂 Drop the file here!' : status}
-        </p>
+        <img src="/UploadFileLogo.svg" alt="Upload Logo" style={{ width: '100px', height: '100px' }} className="my-4" />
+        <p className="text-sm font-semibold">Click to upload or drag a file</p>
         <p className="text-xs text-gray-400">Only .csv files are supported</p>
       </div>
     </div>
