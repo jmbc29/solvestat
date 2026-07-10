@@ -17,30 +17,42 @@ import UploadFile from './components/UploadFile'
 import SolveChart from './components/SolveChart'
 import HypothesisPanel from './components/HypothesisPanel'
 import './index.css'
+import WCAPanel from './components/WCAPanel'
 
-function Sidebar({ stats, showAo5, setShowAo5, showAo12, setShowAo12, chartType, setChartType, showAnalysis, setShowAnalysis, filters, toggleFilter }) {
+function Sidebar({ stats, activeSession, chartType, setChartType, activeAnalysis, setActiveAnalysis, filters, toggleFilter, distOverlays, toggleDistOverlay, subXTarget, setSubXTarget, dataType, setDataType, customAoX, setCustomAoX, customAoXInput, setCustomAoXInput, sessions, activeTab, overlaySessionIds, toggleOverlaySession }) {
   return (
-    <div className="w-64 min-h-screen bg-gray-800 border-r border-gray-700 p-4 flex flex-col gap-6 shrink-0">
+    <div className="w-64 min-h-screen bg-gray-800 border-r border-gray-700 p-4 flex flex-col gap-6 shrink-0 overflow-y-auto">
       <h2 className="text-3xl font-bold text-white">SolveStat</h2>
 
       {/* Stats Panel */}
       <div>
         <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Stats</h3>
-        {stats ? (
-          <div className="flex flex-col gap-2">
-            {[
-              { label: 'Solves', value: stats.count },
-              { label: 'Mean', value: `${stats.mean}s` },
-              { label: 'Best', value: `${stats.best}s` },
-              { label: 'Worst', value: `${stats.worst}s` },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex justify-between text-sm">
-                <span className="text-gray-400">{label}</span>
-                <span className="text-white font-semibold">{value}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
+        {stats && activeSession ? (() => {
+          const allSolves = activeSession.solves
+          const total = allSolves.length
+          const dnfs = allSolves.filter((s) => s.penalty === 'dnf').length
+          const plus2s = allSolves.filter((s) => s.penalty === 'plus2').length
+          const complete = total - dnfs - plus2s
+          const pct = (n) => `${((n / total) * 100).toFixed(1)}%`
+
+          const rows = [
+            { label: 'Total Attempts', value: total },
+            { label: 'Complete', value: `${complete} (${pct(complete)})` },
+            { label: '+2 Solves', value: `${plus2s} (${pct(plus2s)})` },
+            { label: 'DNFs', value: `${dnfs} (${pct(dnfs)})` },
+          ]
+
+          return (
+            <div className="flex flex-col gap-2">
+              {rows.map(({ label, value }) => (
+                <div key={label} className="flex justify-between text-sm gap-2">
+                  <span className="text-gray-400 shrink-0">{label}</span>
+                  <span className="text-white font-semibold text-right">{value}</span>
+                </div>
+              ))}
+            </div>
+          )
+        })() : (
           <p className="text-gray-500 text-sm">Upload a file to see stats</p>
         )}
       </div>
@@ -49,7 +61,7 @@ function Sidebar({ stats, showAo5, setShowAo5, showAo12, setShowAo12, chartType,
       <div>
         <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Chart Type</h3>
         <div className="flex flex-col gap-2">
-          {['line', 'none'].map((type) => (
+          {['line', 'distribution', 'none'].map((type) => (
             <button
               key={type}
               onClick={() => setChartType(type)}
@@ -59,34 +71,82 @@ function Sidebar({ stats, showAo5, setShowAo5, showAo12, setShowAo12, chartType,
                   : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
             >
-              {type === 'line' ? '📈 Line Chart' : '👁️ Hide Times'}
+              {type === 'line' ? '📈 Line Chart'
+                : type === 'distribution' ? '🔔 Distribution Fit'
+                : '👁️ Hide Times'}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Overlays */}
+      {/* Data Type */}
       <div>
-        <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Overlays</h3>
+        <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Data Type</h3>
         <div className="flex flex-col gap-2">
           {[
-            { label: 'Show Ao5', value: showAo5, setter: setShowAo5 },
-            { label: 'Show Ao12', value: showAo12, setter: setShowAo12 },
-          ].map(({ label, value, setter }) => (
+            { id: 'single', label: '📍 Single' },
+            { id: 'ao5', label: '📊 Ao5' },
+            { id: 'ao12', label: '📊 Ao12' },
+          ].map(({ id, label }) => (
             <button
-              key={label}
-              onClick={() => setter(!value)}
+              key={id}
+              onClick={() => setDataType(id)}
               className={`text-sm px-3 py-2 rounded-lg text-left transition ${
-                value
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                dataType === id ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
             >
-              {value ? '✓ ' : ''}{label}
+              {dataType === id ? '✓ ' : ''}{label}
             </button>
           ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setDataType('custom')}
+              className={`text-sm px-3 py-2 rounded-lg text-left transition flex-1 ${
+                dataType === 'custom' ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {dataType === 'custom' ? '✓ ' : ''}📊 AoX
+            </button>
+            <input
+              type="number"
+              min="3"
+              max="1000"
+              value={customAoXInput}
+              onChange={(e) => {
+                setCustomAoXInput(e.target.value)
+                const val = parseInt(e.target.value)
+                if (val >= 3) setCustomAoX(val)
+              }}
+              className="bg-gray-700 text-white text-xs px-2 py-2 rounded-lg outline-none w-16"
+            />
+          </div>
         </div>
       </div>
+
+      {/* Compare Sessions */}
+      {sessions.length > 1 && (
+        <div>
+          <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Compare</h3>
+          <div className="flex flex-col gap-2">
+            {sessions.map((s, i) => {
+              if (i === activeTab) return null
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => toggleOverlaySession(s.id)}
+                  className={`text-sm px-3 py-2 rounded-lg text-left transition truncate ${
+                    overlaySessionIds.includes(s.id)
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {overlaySessionIds.includes(s.id) ? '✓ ' : ''}{s.name}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div>
@@ -101,9 +161,7 @@ function Sidebar({ stats, showAo5, setShowAo5, showAo12, setShowAo12, chartType,
               key={key}
               onClick={() => toggleFilter(key)}
               className={`text-sm px-3 py-2 rounded-lg text-left transition ${
-                filters[key]
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                filters[key] ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
             >
               {filters[key] ? '✓ ' : ''}{label}
@@ -112,19 +170,68 @@ function Sidebar({ stats, showAo5, setShowAo5, showAo12, setShowAo12, chartType,
         </div>
       </div>
 
+      {/* Overlays */}
+      <div>
+        <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Overlays</h3>
+        <div className="flex flex-col gap-2">
+          {[
+            { key: 'mean', label: '📊 Mean' },
+            { key: 'median', label: '📍 Median' },
+            { key: 'sd', label: '📐 ±1 SD Band' },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => toggleDistOverlay(key)}
+              className={`text-sm px-3 py-2 rounded-lg text-left transition ${
+                distOverlays[key] ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {distOverlays[key] ? '✓ ' : ''}{label}
+            </button>
+          ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => toggleDistOverlay('subX')}
+              className={`text-sm px-3 py-2 rounded-lg text-left transition flex-1 ${
+                distOverlays.subX ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {distOverlays.subX ? '✓ ' : ''}🎯 Sub-X
+            </button>
+            <input
+              type="number"
+              step="0.01"
+              value={subXTarget}
+              onChange={(e) => setSubXTarget(e.target.value)}
+              placeholder="e.g. 9"
+              className="bg-gray-700 text-white text-xs px-2 py-2 rounded-lg outline-none w-16"
+            />
+          </div>
+        </div>
+      </div>
+
       {/* Analysis */}
       <div>
         <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Analysis</h3>
-        <button
-          onClick={() => setShowAnalysis(!showAnalysis)}
-          className={`text-sm px-3 py-2 rounded-lg text-left w-full transition ${
-            showAnalysis
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-          }`}
-        >
-          {showAnalysis ? '✓ ' : ''}🔬 Hypothesis Testing
-        </button>
+        <div className="flex flex-col gap-2">
+          {[
+            { id: 'bootstrap', label: '🎯 Sub-X Probability' },
+            { id: 'outlier', label: '📍 Outlier Test' },
+            { id: 'changepoints', label: '🔀 Phase Detection' },
+            { id: 'abtest', label: '⚖️ A/B Test' },
+            { id: 'wca', label: '🏆 WCA Comparison' },
+          ].map(({ id, label }) => (
+            <button
+              key={id}
+              onClick={() => setActiveAnalysis(activeAnalysis === id ? null : id)}
+              className={`text-sm px-3 py-2 rounded-lg text-left transition ${
+                activeAnalysis === id ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}
+            >
+              {activeAnalysis === id ? '✓ ' : ''}{label}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )
@@ -192,11 +299,15 @@ function SortableTab({ id, name, isActive, onClick, onRename }) {
 export default function App() {
   const [sessions, setSessions] = useState([])
   const [activeTab, setActiveTab] = useState(0)
-  const [showAo5, setShowAo5] = useState(false)
-  const [showAo12, setShowAo12] = useState(false)
   const [chartType, setChartType] = useState('line')
-  const [showAnalysis, setShowAnalysis] = useState(false)
+  const [activeAnalysis, setActiveAnalysis] = useState(null)
   const [filters, setFilters] = useState({ plus2: false, dnf: false, hasComment: false })
+  const [distOverlays, setDistOverlays] = useState({ mean: false, median: false, sd: false, subX: false })
+  const [subXTarget, setSubXTarget] = useState('')
+  const [dataType, setDataType] = useState('single')
+  const [customAoX, setCustomAoX] = useState(50)
+  const [customAoXInput, setCustomAoXInput] = useState('50')
+  const [overlaySessionIds, setOverlaySessionIds] = useState([])
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 5 },
@@ -204,6 +315,16 @@ export default function App() {
 
   const toggleFilter = (key) => {
     setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const toggleDistOverlay = (key) => {
+    setDistOverlays((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const toggleOverlaySession = (id) => {
+    setOverlaySessionIds((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
+    )
   }
 
   const handleUpload = (data, fileName) => {
@@ -230,7 +351,7 @@ export default function App() {
   const activeSession = sessions[activeTab]
 
   const filteredSolves = activeSession ? activeSession.solves.filter((s) => {
-  const anyFilterOn = filters.plus2 || filters.dnf || filters.hasComment
+    const anyFilterOn = filters.plus2 || filters.dnf || filters.hasComment
     if (!anyFilterOn) return true
     return (
       (filters.plus2 && s.penalty === 'plus2') ||
@@ -238,6 +359,51 @@ export default function App() {
       (filters.hasComment && !!s.comment)
     )
   }) : []
+
+  const computeAoX = (solves, x) => {
+    const drop = Math.ceil(0.05 * x)
+    const result = []
+    for (let i = 0; i < solves.length; i++) {
+      if (i < x - 1) { result.push(null); continue }
+      const window = solves.slice(i - x + 1, i + 1)
+      const dnfCount = window.filter((s) => s.penalty === 'dnf').length
+      if (dnfCount > drop) {
+        const avgTime = parseFloat((window.reduce((a, b) => a + b.time, 0) / window.length).toFixed(3))
+        result.push({ time: avgTime, isDnf: true, window })
+        continue
+      }
+      const times = window.map((s) => s.time).sort((a, b) => a - b)
+      const trimmed = times.slice(drop, times.length - drop)
+      result.push({
+        time: parseFloat((trimmed.reduce((a, b) => a + b, 0) / trimmed.length).toFixed(3)),
+        isDnf: false,
+        window,
+        trimmedBest: times.slice(0, drop),
+        trimmedWorst: times.slice(times.length - drop),
+      })
+    }
+    return result
+  }
+
+  const getChartData = () => {
+    if (dataType === 'single') return filteredSolves
+    const x = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
+    const aoVals = computeAoX(filteredSolves, x)
+    return filteredSolves
+      .map((s, i) => ({
+        ...s,
+        time: aoVals[i]?.time ?? null,
+        penalty: aoVals[i]?.isDnf ? 'dnf' : 'normal',
+        windowSolves: aoVals[i]?.window ?? null,
+      }))
+      .filter((s) => s.time !== null)
+  }
+
+  const chartSolves = getChartData()
+
+  const overlaySessions = sessions.filter((s, i) =>
+    i !== activeTab && overlaySessionIds.includes(s.id)
+  )
 
   if (sessions.length === 0) {
     return (
@@ -260,16 +426,27 @@ export default function App() {
     <div className="flex min-h-screen bg-gray-900 text-white">
       <Sidebar
         stats={activeSession?.stats}
-        showAo5={showAo5}
-        setShowAo5={setShowAo5}
-        showAo12={showAo12}
-        setShowAo12={setShowAo12}
+        activeSession={activeSession}
         chartType={chartType}
         setChartType={setChartType}
-        showAnalysis={showAnalysis}
-        setShowAnalysis={setShowAnalysis}
+        activeAnalysis={activeAnalysis}
+        setActiveAnalysis={setActiveAnalysis}
         filters={filters}
         toggleFilter={toggleFilter}
+        distOverlays={distOverlays}
+        toggleDistOverlay={toggleDistOverlay}
+        subXTarget={subXTarget}
+        setSubXTarget={setSubXTarget}
+        dataType={dataType}
+        setDataType={setDataType}
+        customAoX={customAoX}
+        setCustomAoX={setCustomAoX}
+        customAoXInput={customAoXInput}
+        setCustomAoXInput={setCustomAoXInput}
+        sessions={sessions}
+        activeTab={activeTab}
+        overlaySessionIds={overlaySessionIds}
+        toggleOverlaySession={toggleOverlaySession}
       />
 
       <div className="flex flex-col flex-1 overflow-hidden">
@@ -299,15 +476,31 @@ export default function App() {
               <div className="bg-gray-800 rounded-xl p-6">
                 <SolveChart
                   key={chartType}
-                  solves={filteredSolves}
-                  showAo5={showAo5}
-                  showAo12={showAo12}
+                  solves={chartSolves}
+                  showAo5={false}
+                  showAo12={false}
                   chartType={chartType}
+                  distOverlays={distOverlays}
+                  subXTarget={subXTarget}
+                  isAverage={dataType !== 'single'}
+                  overlaySessions={overlaySessions}
+                  dataType={dataType}
+                  customAoX={customAoX}
                 />
               </div>
-              {showAnalysis && (
-                <HypothesisPanel session={{ ...activeSession, solves: filteredSolves }} />
-              )}
+              {activeAnalysis && activeAnalysis !== 'wca' && (
+  <HypothesisPanel
+    key={activeAnalysis}
+    session={{ ...activeSession, solves: filteredSolves }}
+    allSessions={sessions}
+    activeTest={activeAnalysis}
+  />
+)}
+{activeAnalysis === 'wca' && (
+  <WCAPanel
+    session={{ ...activeSession, solves: filteredSolves }}
+  />
+)}
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-center gap-4">
