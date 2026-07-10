@@ -15,7 +15,7 @@ import { Bar, Line } from 'react-chartjs-2'
 
 ChartJS.register(LineElement, BarElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Filler)
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function StatRow({ label, value }) {
   return (

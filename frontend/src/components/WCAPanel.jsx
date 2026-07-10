@@ -8,7 +8,7 @@ import annotationPlugin from 'chartjs-plugin-annotation'
 
 ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend, annotationPlugin)
 
-const API = 'http://localhost:8000'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const EVENT_LABELS = {
   '333': '3x3', '222': '2x2', '444': '4x4', '555': '5x5',
