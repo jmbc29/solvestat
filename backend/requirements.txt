@@ -4,3 +4,8 @@ pydantic
 pandas
 python-multipart
 scipy
+scikit-learn
+numpy
+ruptures
+anthropic
+httpx
