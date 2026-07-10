@@ -2,6 +2,8 @@ import { useDropzone } from 'react-dropzone'
 import axios from 'axios'
 import { useCallback, useState } from 'react'
 
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 function UploadFile({ onUpload, compact }) {
   const [status, setStatus] = useState(null)
 
@@ -18,7 +20,7 @@ function UploadFile({ onUpload, compact }) {
     formData.append('file', file)
 
     try {
-      const res = await axios.post('http://localhost:8000/upload/', formData)
+      const res = await axios.post(`${API}/upload/`, formData)
       setStatus(null)
       if (onUpload) onUpload(res.data, file.name)
     } catch (err) {
