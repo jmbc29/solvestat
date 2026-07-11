@@ -59,7 +59,7 @@ function ReadMore({ children }) {
   )
 }
 
-export default function HypothesisPanel({ session, allSessions = [], activeTest }) {
+export default function HypothesisPanel({ session, rawSolves = [], allSessions = [], activeTest }) {
   const [target, setTarget] = useState('')
   const [inputTime, setInputTime] = useState('')
   const [subX, setSubX] = useState('')
@@ -72,10 +72,22 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
   const [error, setError] = useState(null)
   const [includeDnf, setIncludeDnf] = useState(false)
 
+  // Determine if we're in AoX mode (chartSolves will have windowSolves attached)
+  const isAoXMode = session.solves.some((s) => s.windowSolves !== undefined && s.windowSolves !== null)
+
+  // In AoX mode: use chartSolves (already computed averages), excluding DNF averages by default
+  // When includeDnf toggled: switch to raw singles from rawSolves
   const validSolves = includeDnf
-    ? session.solves
-    : session.solves.filter((s) => s.penalty !== 'dnf')
-  const validTimes = validSolves.map((s) => s.time)
+    ? rawSolves.filter((s) => s.time !== null)
+    : session.solves.filter((s) => s.penalty !== 'dnf' && s.time !== null)
+
+  const validTimes = validSolves.map((s) => s.time).filter(Boolean)
+
+  const dataLabel = isAoXMode && !includeDnf
+    ? 'computed averages'
+    : includeDnf
+      ? 'raw singles (incl. DNF)'
+      : 'single times'
 
   const post = async (url, body) => {
     setLoading(true)
@@ -133,17 +145,23 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
   return (
     <div className="bg-gray-800 rounded-xl p-6 mt-4">
       <h2 className="text-lg font-semibold text-white mb-1">Statistical Analysis</h2>
+
+      {/* Data mode indicator + DNF toggle */}
       <div className="flex items-center justify-between mb-4">
         <p className="text-gray-500 text-xs">
-          {includeDnf ? 'DNF times included in analysis' : 'DNF solves are excluded from analysis'}
+          Analyzing: <span className="text-gray-300">{dataLabel}</span>
+          {' '}· {validTimes.length.toLocaleString()} data points
+          {isAoXMode && !includeDnf && (
+            <span className="text-gray-600"> (DNF averages excluded)</span>
+          )}
         </p>
         <button
-          onClick={() => setIncludeDnf(!includeDnf)}
-          className={`text-xs px-3 py-1 rounded-lg transition ${
+          onClick={() => { setIncludeDnf(!includeDnf); setResult(null) }}
+          className={`text-xs px-3 py-1 rounded-lg transition shrink-0 ml-3 ${
             includeDnf ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
           }`}
         >
-          {includeDnf ? '✓ DNF solves included' : 'Include DNF solves'}
+          {includeDnf ? '✓ Using raw singles' : 'Switch to raw singles'}
         </button>
       </div>
 
@@ -165,18 +183,19 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
       {activeTest === 'outlier' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
-            Test whether a specific solve time is statistically unusual given your history.
+            Test whether a specific time is statistically unusual given your {dataLabel}.
           </p>
           <ReadMore>
             <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Takes your solve history and randomly draws 10,000 times from it. It then asks: how often does a random draw land as extreme as the time you entered?</p>
             <p className="mb-2"><strong className="text-gray-300">The p-value:</strong> If p is small (under 0.05), the time is a statistical outlier — it would rarely happen by chance given your normal performance. If p is large, the time is within your normal range.</p>
-            <p className="mb-2"><strong className="text-gray-300">Two-tailed vs one-tail:</strong> Two-tailed tests both directions (unusually fast OR slow). One-tail only tests the relevant direction (fast if the time is below your mean, slow if above).</p>
-            <p><strong className="text-gray-300">Example:</strong> You enter your PB of 5.22s. Only 0.1% of random draws from your history are that fast → p = 0.002 → this is a genuine statistical outlier, not a typical solve.</p>
+            <p className="mb-2"><strong className="text-gray-300">Two-tailed vs one-tail:</strong> Two-tailed tests both directions (unusually fast OR slow). One-tail only tests the relevant direction.</p>
+            <p><strong className="text-gray-300">Example:</strong> You enter your PB of 5.22s. Only 0.1% of random draws from your history are that fast → p = 0.002 → this is a genuine statistical outlier.</p>
           </ReadMore>
           <div className="flex items-center gap-3">
-            <label className="text-gray-400 text-sm shrink-0">Solve time (s)</label>
+            <label className="text-gray-400 text-sm shrink-0">Time (s)</label>
             <input type="number" step="0.01" value={inputTime} onChange={(e) => setInputTime(e.target.value)}
-              placeholder="e.g. 7.5" className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
+              placeholder={isAoXMode && !includeDnf ? 'e.g. 8.500' : 'e.g. 7.5'}
+              className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
           </div>
         </div>
       )}
@@ -184,8 +203,8 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
       {activeTest === 'distribution' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
-            Fits a lognormal distribution to your solve times (MLE) and overlays it on a histogram.
-            Optionally estimate your probability of a sub-X solve.
+            Fits a lognormal distribution to your {dataLabel} and overlays it on a histogram.
+            Optionally estimate your probability of going sub-X.
           </p>
           <div className="flex items-center gap-3">
             <label className="text-gray-400 text-sm shrink-0">Sub-X probability (s, optional)</label>
@@ -198,8 +217,8 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
       {activeTest === 'trend' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
-            Fits a log-linear regression to your improvement over time, with a 95% confidence band.
-            Optionally forecast when you'll reach a target time.
+            Fits a log-linear regression to your {dataLabel} over time, with a 95% confidence band.
+            Optionally forecast when you'll reach a target.
           </p>
           <div className="flex items-center gap-3">
             <label className="text-gray-400 text-sm shrink-0">Forecast target (s, optional)</label>
@@ -212,13 +231,13 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
       {activeTest === 'changepoints' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
-            Automatically detect when your performance significantly shifted over time.
+            Automatically detect when your {dataLabel} significantly shifted over time.
           </p>
           <ReadMore>
-            <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Uses the PELT algorithm (Pruned Exact Linear Time) to find points in your solve history where your performance level genuinely changed — e.g. when you learned a new method or hit a breakthrough.</p>
+            <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Uses the PELT algorithm (Pruned Exact Linear Time) to find points in your solve history where your performance level genuinely changed.</p>
             <p className="mb-2"><strong className="text-gray-300">How PELT works:</strong> It divides your solves into segments and finds the segmentation that minimizes total variance within each segment. Every new breakpoint costs a penalty, so it only adds one if the performance shift is large enough to justify it.</p>
-            <p className="mb-2"><strong className="text-gray-300">Different from clustering:</strong> PELT respects time order — segments are always consecutive solves. It's asking "when did you become a different solver?" not "which solves are similar?"</p>
-            <p><strong className="text-gray-300">Caveat:</strong> The breakpoints are statistical, not guaranteed to match real events. The most meaningful result is when a detected phase boundary lines up with something you actually remember — learning F2L, practicing more consistently, etc.</p>
+            <p className="mb-2"><strong className="text-gray-300">Different from clustering:</strong> PELT respects time order — segments are always consecutive solves.</p>
+            <p><strong className="text-gray-300">Caveat:</strong> The breakpoints are statistical, not guaranteed to match real events.</p>
           </ReadMore>
         </div>
       )}
@@ -226,19 +245,19 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
       {activeTest === 'bootstrap' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
-            Estimate your true probability of going sub-X, with a 95% confidence interval.
+            Estimate your true probability of going sub-X {isAoXMode && !includeDnf ? '(on your averages)' : '(on single solves)'}, with a 95% confidence interval.
           </p>
           <ReadMore>
-            <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Takes your solve history and resamples it 10,000 times (with replacement) to estimate how often you go sub-X.</p>
-            <p className="mb-2"><strong className="text-gray-300">Why not just count?</strong> You could simply count what fraction of your solves are sub-X — that's the empirical rate. But that number has uncertainty. Bootstrap quantifies that uncertainty as a 95% confidence interval.</p>
-            <p className="mb-2"><strong className="text-gray-300">Example:</strong> Your sub-8.9 rate is 25.5%. The bootstrap CI is [24.8%, 26.3%] — meaning you're 95% confident your true rate is in that range.</p>
-            <p><strong className="text-gray-300">Bootstrap SE:</strong> The standard error — how much your rate would typically vary across different sets of solves. Smaller SE = more precise estimate.</p>
+            <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Takes your {dataLabel} and resamples them 10,000 times to estimate how often you go sub-X.</p>
+            <p className="mb-2"><strong className="text-gray-300">Why not just count?</strong> Counting gives the empirical rate, but that has uncertainty. Bootstrap quantifies it as a 95% confidence interval.</p>
+            <p className="mb-2"><strong className="text-gray-300">Example:</strong> Your sub-8.9 rate is 25.5%. The bootstrap CI is [24.8%, 26.3%] — you're 95% confident your true rate is in that range.</p>
+            <p><strong className="text-gray-300">Bootstrap SE:</strong> How much your rate would typically vary. Smaller SE = more precise estimate.</p>
           </ReadMore>
           <div className="flex items-center gap-3">
             <label className="text-gray-400 text-sm shrink-0">Target time (s)</label>
             <input type="number" step="0.01" value={bootstrapTarget}
               onChange={(e) => setBootstrapTarget(e.target.value)}
-              placeholder="e.g. 8.9"
+              placeholder={isAoXMode && !includeDnf ? 'e.g. 8.500' : 'e.g. 8.9'}
               className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
           </div>
         </div>
@@ -251,9 +270,9 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
           </p>
           <ReadMore>
             <p className="mb-2"><strong className="text-gray-300">Welch's t-test:</strong> Tests whether the means of the two sessions are significantly different, accounting for different sample sizes and variances.</p>
-            <p className="mb-2"><strong className="text-gray-300">Mann-Whitney U:</strong> A non-parametric test that doesn't assume normal distribution — more robust to skewed solve time distributions.</p>
-            <p className="mb-2"><strong className="text-gray-300">Cohen's d:</strong> Effect size — even if the difference is significant, is it practically meaningful? Small (&lt;0.2), medium (0.2–0.8), or large (&gt;0.8).</p>
-            <p><strong className="text-gray-300">Bootstrap CI:</strong> 10,000 resamples to estimate the true difference in means with a 95% confidence interval.</p>
+            <p className="mb-2"><strong className="text-gray-300">Mann-Whitney U:</strong> A non-parametric test — more robust to skewed solve time distributions.</p>
+            <p className="mb-2"><strong className="text-gray-300">Cohen's d:</strong> Effect size — is the difference practically meaningful? Small (&lt;0.2), medium (0.2–0.8), or large (&gt;0.8).</p>
+            <p><strong className="text-gray-300">Bootstrap CI:</strong> 10,000 resamples to estimate the true difference in means with 95% confidence.</p>
           </ReadMore>
           {allSessions.length < 2 ? (
             <p className="text-yellow-400 text-sm">Upload at least 2 sessions to use A/B testing.</p>
@@ -261,31 +280,19 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
             <div className="flex flex-col gap-3">
               <div className="flex items-center gap-3">
                 <label className="text-gray-400 text-sm shrink-0 w-24">Session A</label>
-                <select
-                  value={sessionA}
-                  onChange={(e) => setSessionA(Number(e.target.value))}
-                  className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none flex-1"
-                >
-                  {allSessions.map((s, i) => (
-                    <option key={i} value={i}>{s.name}</option>
-                  ))}
+                <select value={sessionA} onChange={(e) => setSessionA(Number(e.target.value))}
+                  className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none flex-1">
+                  {allSessions.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
                 </select>
               </div>
               <div className="flex items-center gap-3">
                 <label className="text-gray-400 text-sm shrink-0 w-24">Session B</label>
-                <select
-                  value={sessionB}
-                  onChange={(e) => setSessionB(Number(e.target.value))}
-                  className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none flex-1"
-                >
-                  {allSessions.map((s, i) => (
-                    <option key={i} value={i}>{s.name}</option>
-                  ))}
+                <select value={sessionB} onChange={(e) => setSessionB(Number(e.target.value))}
+                  className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none flex-1">
+                  {allSessions.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
                 </select>
               </div>
-              {sessionA === sessionB && (
-                <p className="text-yellow-400 text-xs">Select two different sessions.</p>
-              )}
+              {sessionA === sessionB && <p className="text-yellow-400 text-xs">Select two different sessions.</p>}
             </div>
           )}
         </div>
@@ -309,8 +316,6 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
               : 'No significant difference'}
             text={result.interpretation}
           />
-
-          {/* Side by side comparison */}
           <div className="grid grid-cols-2 gap-4 mt-4">
             <div className="bg-gray-900 rounded-lg p-4 flex flex-col gap-2">
               <p className="text-blue-400 text-sm font-semibold truncate">{result.name_a}</p>
@@ -325,7 +330,6 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
               <StatRow label="Solves" value={result.n_b.toLocaleString()} />
             </div>
           </div>
-
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4">
             <StatRow label="Mean difference" value={`${result.observed_diff > 0 ? '+' : ''}${result.observed_diff}s`} />
             <StatRow label="Effect size (Cohen's d)" value={`${result.cohens_d} (${result.effect_label})`} />
@@ -339,8 +343,7 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
 
       {result && activeTest === 'bootstrap' && (
         <>
-          <Banner tone="info" title="Bootstrap Sub-X Probability" text={result.interpretation} />
-
+          <Banner tone="info" title={`Bootstrap Sub-X Probability (${dataLabel})`} text={result.interpretation} />
           <div className="mt-4 mb-2">
             <div className="flex justify-between text-xs text-gray-400 mb-1">
               <span>Unlikely</span>
@@ -351,14 +354,12 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
             <div className="relative h-4 rounded-full overflow-hidden" style={{
               background: 'linear-gradient(to right, #ef4444, #f97316, #eab308, #84cc16, #22c55e)'
             }}>
-              <div
-                className="absolute top-0 w-3 h-4 rounded-full border-2 border-white shadow-lg"
+              <div className="absolute top-0 w-3 h-4 rounded-full border-2 border-white shadow-lg"
                 style={{
                   left: `calc(${Math.min(result.empirical_rate * 100 * 2, 100)}% - 6px)`,
                   backgroundColor: '#fff',
                   transition: 'left 0.3s ease',
-                }}
-              />
+                }} />
             </div>
             <div className="text-center mt-2">
               <span className="text-lg font-bold" style={{
@@ -376,7 +377,6 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
               </span>
             </div>
           </div>
-
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4">
             <StatRow label="Empirical rate" value={`${(result.empirical_rate * 100).toFixed(1)}%`} />
             <StatRow label="Sub-X count" value={`${result.empirical_count} / ${result.n_solves}`} />
@@ -416,7 +416,7 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
           />
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4">
             <StatRow label="Input time" value={`${result.input_time}s`} />
-            <StatRow label="Session mean" value={`${result.session_mean}s`} />
+            <StatRow label="Mean" value={`${result.session_mean}s`} />
             <StatRow label="Percentile" value={`${result.percentile}%`} />
             <StatRow label="Std dev" value={`${result.session_std}s`} />
             <StatRow label="P-value (two-tailed)" value={result.p_value} />
@@ -497,28 +497,9 @@ export default function HypothesisPanel({ session, allSessions = [], activeTest 
               data={{
                 labels: result.curve.x,
                 datasets: [
-                  {
-                    label: '95% CI upper',
-                    data: result.curve.upper,
-                    borderColor: 'transparent',
-                    pointRadius: 0,
-                    fill: false,
-                  },
-                  {
-                    label: '95% CI lower',
-                    data: result.curve.lower,
-                    borderColor: 'transparent',
-                    backgroundColor: 'rgba(52, 211, 153, 0.15)',
-                    pointRadius: 0,
-                    fill: '-1',
-                  },
-                  {
-                    label: 'Fitted trend',
-                    data: result.curve.trend,
-                    borderColor: '#34d399',
-                    pointRadius: 0,
-                    tension: 0.2,
-                  },
+                  { label: '95% CI upper', data: result.curve.upper, borderColor: 'transparent', pointRadius: 0, fill: false },
+                  { label: '95% CI lower', data: result.curve.lower, borderColor: 'transparent', backgroundColor: 'rgba(52, 211, 153, 0.15)', pointRadius: 0, fill: '-1' },
+                  { label: 'Fitted trend', data: result.curve.trend, borderColor: '#34d399', pointRadius: 0, tension: 0.2 },
                 ],
               }}
               options={{

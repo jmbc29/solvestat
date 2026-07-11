@@ -16,10 +16,10 @@ import { CSS } from '@dnd-kit/utilities'
 import UploadFile from './components/UploadFile'
 import SolveChart from './components/SolveChart'
 import HypothesisPanel from './components/HypothesisPanel'
-import './index.css'
 import WCAPanel from './components/WCAPanel'
+import './index.css'
 
-function Sidebar({ stats, activeSession, chartType, setChartType, activeAnalysis, setActiveAnalysis, filters, toggleFilter, distOverlays, toggleDistOverlay, subXTarget, setSubXTarget, dataType, setDataType, customAoX, setCustomAoX, customAoXInput, setCustomAoXInput, sessions, activeTab, overlaySessionIds, toggleOverlaySession }) {
+function Sidebar({ stats, activeSession, chartTypes, toggleChartType, activeAnalysis, setActiveAnalysis, filters, toggleFilter, distOverlays, toggleDistOverlay, subXTarget, setSubXTarget, dataType, setDataType, customAoX, setCustomAoX, customAoXInput, setCustomAoXInput, sessions, activeTab, overlaySessionIds, toggleOverlaySession }) {
   return (
     <div className="w-64 min-h-screen bg-gray-800 border-r border-gray-700 p-4 flex flex-col gap-6 shrink-0 overflow-y-auto">
       <h2 className="text-3xl font-bold text-white">SolveStat</h2>
@@ -34,14 +34,12 @@ function Sidebar({ stats, activeSession, chartType, setChartType, activeAnalysis
           const plus2s = allSolves.filter((s) => s.penalty === 'plus2').length
           const complete = total - dnfs - plus2s
           const pct = (n) => `${((n / total) * 100).toFixed(1)}%`
-
           const rows = [
             { label: 'Total Attempts', value: total },
             { label: 'Complete', value: `${complete} (${pct(complete)})` },
             { label: '+2 Solves', value: `${plus2s} (${pct(plus2s)})` },
             { label: 'DNFs', value: `${dnfs} (${pct(dnfs)})` },
           ]
-
           return (
             <div className="flex flex-col gap-2">
               {rows.map(({ label, value }) => (
@@ -61,19 +59,21 @@ function Sidebar({ stats, activeSession, chartType, setChartType, activeAnalysis
       <div>
         <h3 className="text-xs text-gray-400 uppercase tracking-widest mb-3">Chart Type</h3>
         <div className="flex flex-col gap-2">
-          {['line', 'distribution', 'none'].map((type) => (
+          {[
+            { type: 'line', label: '📈 Line Chart' },
+            { type: 'distribution', label: '🔔 Distribution Fit' },
+            { type: 'none', label: '👁️ Hide Times' },
+          ].map(({ type, label }) => (
             <button
               key={type}
-              onClick={() => setChartType(type)}
+              onClick={() => toggleChartType(type)}
               className={`text-sm px-3 py-2 rounded-lg text-left capitalize transition ${
-                chartType === type
+                chartTypes.includes(type)
                   ? 'bg-blue-600 text-white'
                   : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
               }`}
             >
-              {type === 'line' ? '📈 Line Chart'
-                : type === 'distribution' ? '🔔 Distribution Fit'
-                : '👁️ Hide Times'}
+              {chartTypes.includes(type) ? '✓ ' : ''}{label}
             </button>
           ))}
         </div>
@@ -273,7 +273,6 @@ function SortableTab({ id, name, isActive, onClick, onRename }) {
       >
         ⠿
       </span>
-
       {editing ? (
         <input
           autoFocus
@@ -299,7 +298,7 @@ function SortableTab({ id, name, isActive, onClick, onRename }) {
 export default function App() {
   const [sessions, setSessions] = useState([])
   const [activeTab, setActiveTab] = useState(0)
-  const [chartType, setChartType] = useState('line')
+  const [chartTypes, setChartTypes] = useState(['line'])
   const [activeAnalysis, setActiveAnalysis] = useState(null)
   const [filters, setFilters] = useState({ plus2: false, dnf: false, hasComment: false })
   const [distOverlays, setDistOverlays] = useState({ mean: false, median: false, sd: false, subX: false })
@@ -313,19 +312,26 @@ export default function App() {
     activationConstraint: { distance: 5 },
   }))
 
-  const toggleFilter = (key) => {
-    setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
+  const toggleChartType = (type) => {
+    if (type === 'none') {
+      setChartTypes(['none'])
+      return
+    }
+    setChartTypes((prev) => {
+      const without = prev.filter((t) => t !== 'none')
+      if (without.includes(type)) {
+        const next = without.filter((t) => t !== type)
+        return next.length === 0 ? ['none'] : next
+      }
+      return [...without, type]
+    })
   }
 
-  const toggleDistOverlay = (key) => {
-    setDistOverlays((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const toggleOverlaySession = (id) => {
-    setOverlaySessionIds((prev) =>
-      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
-    )
-  }
+  const toggleFilter = (key) => setFilters((prev) => ({ ...prev, [key]: !prev[key] }))
+  const toggleDistOverlay = (key) => setDistOverlays((prev) => ({ ...prev, [key]: !prev[key] }))
+  const toggleOverlaySession = (id) => setOverlaySessionIds((prev) =>
+    prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
+  )
 
   const handleUpload = (data, fileName) => {
     setSessions((prev) => [...prev, { id: crypto.randomUUID(), name: fileName, solves: data.solves, stats: data.stats }])
@@ -400,10 +406,19 @@ export default function App() {
   }
 
   const chartSolves = getChartData()
+  const overlaySessions = sessions.filter((s, i) => i !== activeTab && overlaySessionIds.includes(s.id))
 
-  const overlaySessions = sessions.filter((s, i) =>
-    i !== activeTab && overlaySessionIds.includes(s.id)
-  )
+  const sharedChartProps = {
+    solves: chartSolves,
+    showAo5: false,
+    showAo12: false,
+    distOverlays,
+    subXTarget,
+    isAverage: dataType !== 'single',
+    overlaySessions,
+    dataType,
+    customAoX,
+  }
 
   if (sessions.length === 0) {
     return (
@@ -427,8 +442,8 @@ export default function App() {
       <Sidebar
         stats={activeSession?.stats}
         activeSession={activeSession}
-        chartType={chartType}
-        setChartType={setChartType}
+        chartTypes={chartTypes}
+        toggleChartType={toggleChartType}
         activeAnalysis={activeAnalysis}
         setActiveAnalysis={setActiveAnalysis}
         filters={filters}
@@ -474,31 +489,43 @@ export default function App() {
           {activeSession ? (
             <div className="flex flex-col gap-4">
               <div className="bg-gray-800 rounded-xl p-6">
-                <SolveChart
-                  key={chartType}
-                  solves={chartSolves}
-                  showAo5={false}
-                  showAo12={false}
-                  chartType={chartType}
-                  distOverlays={distOverlays}
-                  subXTarget={subXTarget}
-                  isAverage={dataType !== 'single'}
-                  overlaySessions={overlaySessions}
-                  dataType={dataType}
-                  customAoX={customAoX}
-                />
+                {chartTypes.includes('line') && (
+                  <SolveChart
+                    key="line"
+                    {...sharedChartProps}
+                    chartType={chartTypes.includes('none') ? 'none' : 'line'}
+                  />
+                )}
+                {chartTypes.includes('distribution') && (
+                  <div className={chartTypes.includes('line') ? 'mt-6 pt-6 border-t border-gray-700' : ''}>
+                    <SolveChart
+                      key="distribution"
+                      {...sharedChartProps}
+                      chartType="distribution"
+                    />
+                  </div>
+                )}
+                {!chartTypes.includes('line') && !chartTypes.includes('distribution') && (
+                  <SolveChart
+                    key="none"
+                    {...sharedChartProps}
+                    chartType="none"
+                  />
+                )}
               </div>
               {activeAnalysis && activeAnalysis !== 'wca' && (
   <HypothesisPanel
     key={activeAnalysis}
-    session={{ ...activeSession, solves: filteredSolves }}
+    session={{ ...activeSession, solves: chartSolves }}
+    rawSolves={filteredSolves}
     allSessions={sessions}
     activeTest={activeAnalysis}
   />
 )}
-{activeAnalysis === 'wca' && (
+              {activeAnalysis === 'wca' && (
   <WCAPanel
-    session={{ ...activeSession, solves: filteredSolves }}
+    session={{ ...activeSession, solves: chartSolves }}
+    rawSolves={filteredSolves}
   />
 )}
             </div>

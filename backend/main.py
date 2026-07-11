@@ -165,7 +165,7 @@ async def outlier_test(times: List[float] = Body(...), time: float = 10.0):
     arr = np.array(times)
     n = len(arr)
     percentile = float(np.mean(arr <= time))
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     n_permutations = 10000
     draws = rng.choice(arr, size=n_permutations, replace=True)
     mean = float(arr.mean())
@@ -470,7 +470,7 @@ async def bootstrap_analysis(times: List[float] = Body(...), target: float = 10.
     arr = np.array(times)
     n = len(arr)
     empirical_rate = float(np.mean(arr < target))
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     bootstrap_rates = []
     for _ in range(n_resamples):
         resample = rng.choice(arr, size=n, replace=True)
@@ -526,7 +526,7 @@ async def ab_test(payload: ABTestPayload):
     elif abs_d < 0.5: effect_label = "small"
     elif abs_d < 0.8: effect_label = "medium"
     else: effect_label = "large"
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     n_resamples = 10000
     diffs = []
     for _ in range(n_resamples):
@@ -576,16 +576,33 @@ async def ab_test(payload: ABTestPayload):
 # ─── WCA endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/wca/competitions/search")
-async def search_competitions(query: str, year: Optional[int] = None):
-    """Search WCA competitions by name."""
-    params = {"q": query, "per_page": 20, "sort": "start_date"}
-    if year:
-        params["start"] = f"{year}-01-01"
-        params["end"] = f"{year}-12-31"
+async def search_competitions(query: Optional[str] = None):
+    """Search WCA competitions by name, or return recent past competitions if no query."""
+    from datetime import date
+    today = date.today().isoformat()
+
     async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
+        if query and query.strip():
+            # Search by name, past only, most recent first
+            params = {
+                "q": query.strip(),
+                "per_page": 20,
+                "end": today,
+                "sort": "-start_date",
+            }
+            resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
+        else:
+            # No query — return recent past competitions
+            params = {
+                "per_page": 20,
+                "end": today,
+                "sort": "-start_date",
+            }
+            resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
+
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail="WCA API error.")
+
     comps = resp.json()
     return [
         {
@@ -603,8 +620,7 @@ async def search_competitions(query: str, year: Optional[int] = None):
 
 
 @app.get("/wca/competitions/{comp_id}/results/{event_id}")
-async def get_competition_results(comp_id: str, event_id: str):
-    """Fetch all competitor averages for a specific event at a competition."""
+async def get_competition_results(comp_id: str, event_id: str, round_id: Optional[str] = None):
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(
             f"{WCA_API}/competitions/{comp_id}/results",
@@ -617,28 +633,74 @@ async def get_competition_results(comp_id: str, event_id: str):
 
     all_results = resp.json()
 
-    # Filter to the requested event and round type (final preferred, else best available)
-    event_results = [r for r in all_results if r.get("event_id") == event_id]
-    if not event_results:
-        raise HTTPException(status_code=404, detail=f"No results for event {event_id} at this competition.")
+    # Handle both list format and dict format
+    if isinstance(all_results, dict):
+        results_list = all_results.get("results", all_results.get("data", []))
+    else:
+        results_list = all_results
 
-    # Prefer final round, fall back to best round available
-    round_types = [r.get("round_type_id") for r in event_results]
-    preferred = ["f", "c", "3", "2", "1"]
-    best_round = next((rt for rt in preferred if rt in round_types), round_types[0])
-    round_results = [r for r in event_results if r.get("round_type_id") == best_round]
+    event_results = [r for r in results_list if r.get("event_id") == event_id]
+    if not event_results:
+        # Try to find what events are available
+        available = list(set(r.get("event_id", "") for r in results_list if r.get("event_id")))
+        raise HTTPException(
+            status_code=404,
+            detail=f"No results for event '{event_id}' at this competition. Available events: {', '.join(sorted(available))}"
+        )
+
+    # Get round type — try multiple field names
+    def get_round_type(r):
+        return r.get("round_type_id") or r.get("roundTypeId") or r.get("round_type") or r.get("round") or "f"
+
+    round_order = {"1": 1, "2": 2, "3": 3, "c": 4, "f": 5}
+    rounds_found = {}
+    for r in event_results:
+        rt = get_round_type(r)
+        rounds_found[rt] = rounds_found.get(rt, 0) + 1
+
+    sorted_rounds = sorted(rounds_found.keys(), key=lambda x: round_order.get(x, 99))
+
+    round_labels = {
+        "1": "Round 1", "2": "Round 2", "3": "Round 3",
+        "c": "Combined Final", "f": "Final"
+    }
+
+    rounds_info = [
+        {
+            "id": rt,
+            "label": round_labels.get(rt, f"Round {rt}"),
+            "competitor_count": rounds_found[rt],
+        }
+        for rt in sorted_rounds
+    ]
+
+    if round_id and round_id in rounds_found:
+        selected_round = round_id
+    else:
+        preferred = ["f", "c", "3", "2", "1"]
+        selected_round = next((rt for rt in preferred if rt in rounds_found), sorted_rounds[-1])
+
+    round_results = [r for r in event_results if get_round_type(r) == selected_round]
+
+    selected_idx = sorted_rounds.index(selected_round)
+    next_round_count = None
+    if selected_idx < len(sorted_rounds) - 1:
+        next_round = sorted_rounds[selected_idx + 1]
+        next_round_count = rounds_found[next_round]
 
     competitors = []
     for r in round_results:
-        # WCA stores times in centiseconds; -1 = DNF, -2 = DNS
         avg_cs = r.get("average", -1)
         best_cs = r.get("best", -1)
+        # Handle None values
+        if avg_cs is None: avg_cs = -1
+        if best_cs is None: best_cs = -1
         if avg_cs > 0:
             avg_s = round(avg_cs / 100, 3)
         elif best_cs > 0:
             avg_s = round(best_cs / 100, 3)
         else:
-            continue  # skip DNF/DNS
+            continue
 
         competitors.append({
             "name": r.get("name", "Unknown"),
@@ -650,20 +712,24 @@ async def get_competition_results(comp_id: str, event_id: str):
         })
 
     competitors.sort(key=lambda x: x["average"])
+
     return {
         "competition_id": comp_id,
         "event_id": event_id,
-        "round": best_round,
+        "round": selected_round,
+        "rounds": rounds_info,
+        "next_round_count": next_round_count,
+        "is_final": selected_round in ["f", "c"] or selected_idx == len(sorted_rounds) - 1,
         "competitor_count": len(competitors),
         "competitors": competitors,
     }
 
-
 class WCASimPayload(BaseModel):
     times: List[float]
     competitor_averages: List[float]
-    n_simulations: int = 5000
-    solve_count: int = 5  # solves per average (5 for 3x3, 3 for 6x6 etc.)
+    n_simulations: int = 10000
+    solve_count: int = 5
+    next_round_count: Optional[int] = None
 
 @app.post("/wca/simulate")
 async def simulate_placement(payload: WCASimPayload):
@@ -672,16 +738,15 @@ async def simulate_placement(payload: WCASimPayload):
     competitor_avgs = np.array(sorted(payload.competitor_averages))
     n_competitors = len(competitor_avgs)
     solve_count = payload.solve_count
-    drop = 1 if solve_count == 5 else 0  # drop 1 best + 1 worst for bo5, none for mo3
+    drop = 1 if solve_count == 5 else 0
 
     if len(arr) < solve_count:
         raise HTTPException(status_code=400, detail=f"Need at least {solve_count} solves.")
 
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     placements = []
 
     for _ in range(payload.n_simulations):
-        # Sample solve_count solves from user's history
         draws = rng.choice(arr, size=solve_count, replace=True)
         if drop > 0:
             draws_sorted = np.sort(draws)
@@ -689,8 +754,6 @@ async def simulate_placement(payload: WCASimPayload):
             user_avg = float(trimmed.mean())
         else:
             user_avg = float(draws.mean())
-
-        # Rank: how many competitors are faster
         place = int(np.sum(competitor_avgs < user_avg)) + 1
         placements.append(place)
 
@@ -699,11 +762,8 @@ async def simulate_placement(payload: WCASimPayload):
     ci_low = int(np.percentile(placements, 2.5))
     ci_high = int(np.percentile(placements, 97.5))
     mean_place = float(placements.mean())
-
-    # Percentile among field
     percentile_in_field = float((n_competitors - median_place + 1) / n_competitors * 100)
 
-    # Distribution of placements (histogram for chart)
     place_counts = {}
     for p in placements:
         place_counts[int(p)] = place_counts.get(int(p), 0) + 1
@@ -712,22 +772,26 @@ async def simulate_placement(payload: WCASimPayload):
     top10_prob = float(np.mean(placements <= 10) * 100)
     top_half_prob = float(np.mean(placements <= n_competitors / 2) * 100)
 
+    # Advancement probability
+    advance_prob = None
+    if payload.next_round_count is not None:
+        advance_prob = float(np.mean(placements <= payload.next_round_count) * 100)
+
     if median_place == 1:
         interpretation = (
-            f"You would likely WIN this competition! "
+            f"You would likely WIN this round! "
             f"Median projected place: 1st out of {n_competitors} competitors "
             f"(95% CI: {ci_low}–{ci_high})."
         )
     elif median_place <= 3:
         interpretation = (
-            f"You would likely podium at this competition. "
+            f"You would likely podium. "
             f"Median projected place: {median_place} out of {n_competitors} "
-            f"(95% CI: {ci_low}–{ci_high}). "
-            f"Top 3 probability: {top3_prob:.1f}%."
+            f"(95% CI: {ci_low}–{ci_high}). Top 3 probability: {top3_prob:.1f}%."
         )
     elif percentile_in_field >= 75:
         interpretation = (
-            f"You would be in the top quarter of this competition. "
+            f"You would be in the top quarter. "
             f"Median projected place: {median_place} out of {n_competitors} "
             f"(95% CI: {ci_low}–{ci_high})."
         )
@@ -737,6 +801,9 @@ async def simulate_placement(payload: WCASimPayload):
             f"(95% CI: {ci_low}–{ci_high}). "
             f"You'd beat approximately {100 - percentile_in_field:.0f}% of the field."
         )
+
+    if advance_prob is not None:
+        interpretation += f" Advancement probability to next round: {advance_prob:.1f}%."
 
     return {
         "n_competitors": n_competitors,
@@ -748,6 +815,7 @@ async def simulate_placement(payload: WCASimPayload):
         "top3_prob": round(top3_prob, 1),
         "top10_prob": round(top10_prob, 1),
         "top_half_prob": round(top_half_prob, 1),
+        "advance_prob": round(advance_prob, 1) if advance_prob is not None else None,
         "percentile_in_field": round(percentile_in_field, 1),
         "placement_distribution": place_counts,
         "interpretation": interpretation,
@@ -789,7 +857,7 @@ async def get_wca_profile(wca_id: str):
         "country": person.get("country_iso2", ""),
         "gender": person.get("gender", ""),
         "delegate_status": person.get("delegate_status"),
-        "competitions_count": len(data.get("competition_ids", [])),
+        "competitions_count": person.get("competition_count") or len(data.get("competition_ids", [])),
         "personal_bests": pbs,
     }
 
@@ -836,13 +904,13 @@ class PBSimPayload(BaseModel):
     pb_single: float
     pb_average: Optional[float] = None
     solve_count: int = 5
-    n_simulations: int = 5000
+    n_simulations: int = 10000
 
 @app.post("/wca/simulate-pb")
 async def simulate_pb(payload: PBSimPayload):
     """Simulate probability of breaking PB single and average."""
     arr = np.array(payload.times)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     solve_count = payload.solve_count
     drop = 1 if solve_count == 5 else 0
 
@@ -896,14 +964,14 @@ class HeadToHeadPayload(BaseModel):
     their_comp_averages: List[float]
     their_name: str = "Opponent"
     solve_count: int = 5
-    n_simulations: int = 5000
+    n_simulations: int = 10000
 
 @app.post("/wca/head-to-head")
 async def head_to_head(payload: HeadToHeadPayload):
     """Simulate head-to-head: your solve distribution vs their comp average distribution."""
     your_arr = np.array(payload.your_times)
     their_arr = np.array(payload.their_comp_averages)
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng()
     solve_count = payload.solve_count
     drop = 1 if solve_count == 5 else 0
 

@@ -221,52 +221,105 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     })
 
     const timeToLabelIndex = (t) => (t - globalMin) / safeBinWidth - 0.5
+    const distMeanAboveMedian = mean < median
 
     const annotations = {
       ...(distOverlays.mean ? {
         mean: {
-          type: 'line', scaleID: 'x',
-          value: timeToLabelIndex(mean),
-          borderColor: '#a78bfa', borderWidth: 3, borderDash: [6, 3],
-          label: { content: `Mean ${mean.toFixed(2)}s`, display: true, color: '#a78bfa', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
-        }
+  type: 'line', scaleID: 'x',
+  value: timeToLabelIndex(mean),
+  borderColor: '#e669d5', borderWidth: 2, borderDash: [6, 3],
+  z: 10,
+  label: {
+    content: `Mean ${mean.toFixed(2)}s`,
+    display: true,
+    color: '#e669d5',
+    backgroundColor: 'rgba(17,24,39,0.8)',
+    font: { size: 11 },
+    position: 'start',
+    rotation: 0,
+    padding: 4,
+    xAdjust: distMeanAboveMedian ? -50 : 50,
+  }
+}
       } : {}),
       ...(distOverlays.median ? {
         median: {
-          type: 'line', scaleID: 'x',
-          value: timeToLabelIndex(median),
-          borderColor: '#22d3ee', borderWidth: 3, borderDash: [6, 3],
-          label: { content: `Median ${median.toFixed(2)}s`, display: true, color: '#22d3ee', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
-        }
+  type: 'line', scaleID: 'x',
+  value: timeToLabelIndex(median),
+  borderColor: '#cc50fd', borderWidth: 2, borderDash: [6, 3],
+  z: 10,
+  label: {
+    content: `Median ${median.toFixed(2)}s`,
+    display: true,
+    color: '#cc50fd',
+    backgroundColor: 'rgba(17,24,39,0.8)',
+    font: { size: 11 },
+    position: 'start',
+    rotation: 0,
+    padding: 4,
+    xAdjust: distMeanAboveMedian ? 50 : -50,
+  }
+}
       } : {}),
       ...(distOverlays.subX && subXTarget ? {
         subX: {
           type: 'line', scaleID: 'x',
           value: timeToLabelIndex(Number(subXTarget)),
-          borderColor: '#f43f5e', borderWidth: 3, borderDash: [6, 3],
-          label: { content: `Sub-${subXTarget}s`, display: true, color: '#f43f5e', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
+          borderColor: '#745be6', borderWidth: 2, borderDash: [6, 3],
+          label: {
+  content: `${subXTarget}s`,
+  display: true,
+  color: '#745be6',
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 11 },
+  position: '10%',
+  rotation: 0,
+  padding: 4,
+  xAdjust: 0,
+}
         }
       } : {}),
       ...(distOverlays.sd ? {
         sdBand: {
-          type: 'box',
-          xMin: timeToLabelIndex(mean - sd),
-          xMax: timeToLabelIndex(mean + sd),
-          backgroundColor: 'rgba(34,197,94,0.15)',
-          borderColor: 'rgba(34,197,94,0)',
-          borderWidth: 0,
-        },
+  type: 'box',
+  xMin: timeToLabelIndex(mean - sd),
+  xMax: timeToLabelIndex(mean + sd),
+  backgroundColor: 'rgba(228, 156, 185, 0.28)',
+  borderColor: 'rgba(233, 58, 128, 0.9)',
+  borderWidth: 0,
+},
         sdLow: {
           type: 'line', scaleID: 'x',
           value: timeToLabelIndex(mean - sd),
-          borderColor: 'rgba(34,197,94,0.7)', borderWidth: 2, borderDash: [3, 3],
-          label: { content: `-1SD ${(mean - sd).toFixed(2)}s`, display: true, color: 'rgba(34,197,94,0.9)', backgroundColor: 'transparent', font: { size: 12 }, position: 'end' },
+          borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
+          label: {
+  content: `-1SD ${(mean - sd).toFixed(2)}s`,
+  display: true,
+  color: 'rgba(233, 58, 128, 0.9)',
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 10 },
+  position: 'end',
+  rotation: 0,
+  padding: 4,
+  xAdjust: 50,
+}
         },
         sdHigh: {
           type: 'line', scaleID: 'x',
           value: timeToLabelIndex(mean + sd),
-          borderColor: 'rgba(34,197,94,0.7)', borderWidth: 2, borderDash: [3, 3],
-          label: { content: `+1SD ${(mean + sd).toFixed(2)}s`, display: true, color: 'rgba(34,197,94,0.9)', backgroundColor: 'transparent', font: { size: 12 }, position: 'end' },
+          borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
+          label: {
+  content: `+1SD ${(mean + sd).toFixed(2)}s`,
+  display: true,
+  color: 'rgba(233, 58, 128, 0.9)',
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 10 },
+  position: 'end',
+  rotation: 0,
+  padding: 4,
+  xAdjust: -50,
+}
         },
       } : {}),
     }
@@ -392,20 +445,42 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     : 0
   const lineVariance = n > 1 ? validTimes.reduce((a, b) => a + (b - lineMean) ** 2, 0) / (n - 1) : 0
   const lineSd = Math.sqrt(lineVariance)
-
+  const meanAboveMedian = lineMean > lineMedian
   const lineAnnotations = {
     ...(distOverlays.mean ? {
       mean: {
         type: 'line', scaleID: 'y', value: lineMean,
-        borderColor: '#a78bfa', borderWidth: 3, borderDash: [6, 3],
-        label: { content: `Mean ${lineMean.toFixed(2)}s`, display: true, color: '#a78bfa', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
+        borderColor: '#e669d5', borderWidth: 2, borderDash: [6, 3],
+        z: 10,
+        label: { 
+  content: `Mean ${lineMean.toFixed(2)}s`, 
+  display: true, 
+  color: '#e669d5', 
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 11 },
+  position: 'start',
+  rotation: -90,
+  padding: 4,
+  yAdjust: meanAboveMedian ? -50 : 50,
+}
       }
     } : {}),
     ...(distOverlays.median ? {
       median: {
         type: 'line', scaleID: 'y', value: lineMedian,
-        borderColor: '#22d3ee', borderWidth: 3, borderDash: [6, 3],
-        label: { content: `Median ${lineMedian.toFixed(2)}s`, display: true, color: '#22d3ee', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
+        borderColor: '#cc50fd', borderWidth: 2, borderDash: [6, 3],
+        z: 10,
+        label: { 
+  content: `Median ${lineMedian.toFixed(2)}s`, 
+  display: true, 
+  color: '#cc50fd', 
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 11 },
+  position: 'start',
+  rotation: -90,
+  padding: 4,
+  yAdjust: meanAboveMedian ? 50 : -50,
+}
       }
     } : {}),
     ...(distOverlays.sd ? {
@@ -413,26 +488,56 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
         type: 'box',
         yMin: lineMean - lineSd,
         yMax: lineMean + lineSd,
-        backgroundColor: 'rgba(34,197,94,0.15)',
-        borderColor: 'rgba(34,197,94,0)',
+        backgroundColor: 'rgba(228, 156, 185, 0.28)',
+        borderColor: 'rgba(233, 58, 128, 0.9)',
         borderWidth: 0,
       },
       sdLow: {
         type: 'line', scaleID: 'y', value: lineMean - lineSd,
-        borderColor: 'rgba(34,197,94,0.7)', borderWidth: 2, borderDash: [3, 3],
-        label: { content: `-1SD ${(lineMean - lineSd).toFixed(2)}s`, display: true, color: 'rgba(34,197,94,0.9)', backgroundColor: 'transparent', font: { size: 12 }, position: 'end' },
+        borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
+        label: { 
+  content: `-1SD ${(lineMean - lineSd).toFixed(2)}s`, 
+  display: true, 
+  color: 'rgba(233, 58, 128, 0.9)', 
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 10 },
+  position: 'end',
+  rotation: -90,
+  padding: 4,
+  yAdjust: 0,
+}
       },
       sdHigh: {
         type: 'line', scaleID: 'y', value: lineMean + lineSd,
-        borderColor: 'rgba(34,197,94,0.7)', borderWidth: 2, borderDash: [3, 3],
-        label: { content: `+1SD ${(lineMean + lineSd).toFixed(2)}s`, display: true, color: 'rgba(34,197,94,0.9)', backgroundColor: 'transparent', font: { size: 12 }, position: 'end' },
+        borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
+        label: { 
+  content: `+1SD ${(lineMean + lineSd).toFixed(2)}s`, 
+  display: true, 
+  color: 'rgba(233, 58, 128, 0.9)', 
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 10 },
+  position: 'end',
+  rotation: -90,
+  padding: 4,
+  yAdjust: -6,
+}
       },
     } : {}),
     ...(distOverlays.subX && subXTarget ? {
       subX: {
         type: 'line', scaleID: 'y', value: Number(subXTarget),
-        borderColor: '#f43f5e', borderWidth: 3, borderDash: [6, 3],
-        label: { content: `Sub-${subXTarget}s`, display: true, color: '#f43f5e', backgroundColor: 'transparent', font: { size: 13 }, position: 'start' },
+        borderColor: '#745be6', borderWidth: 2, borderDash: [6, 3],
+        label: { 
+  content: `${subXTarget}s`, 
+  display: true, 
+  color: '#745be6', 
+  backgroundColor: 'rgba(17,24,39,0.8)',
+  font: { size: 11 },
+  position: '5%',
+  rotation: -90,
+  padding: 4,
+  yAdjust: 0,
+}
       }
     } : {}),
   }
@@ -640,22 +745,6 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
         <div className="flex items-center gap-1.5">
           <span style={{ display: 'inline-block', width: 12, height: 12, clipPath: 'polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)', backgroundColor: '#ef4444' }} />
           Worst: <span className="text-white ml-1">{worstTime !== null ? `${worstTime}s` : '—'}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span style={{ display: 'inline-block', width: 24, height: 3, backgroundColor: '#a78bfa' }} />
-          Mean: <span className="text-white ml-1">{lineMean > 0 ? `${lineMean.toFixed(3)}s` : '—'}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span style={{ display: 'inline-block', width: 24, height: 3, backgroundColor: '#22d3ee' }} />
-          Median: <span className="text-white ml-1">{lineMedian > 0 ? `${lineMedian.toFixed(3)}s` : '—'}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span style={{ display: 'inline-block', width: 24, height: 3, backgroundColor: 'rgba(34,197,94,0.6)' }} />
-          ±1 SD: <span className="text-white ml-1">{lineSd > 0 ? `${lineSd.toFixed(3)}s` : '—'}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span style={{ display: 'inline-block', width: 24, height: 3, backgroundColor: '#f43f5e' }} />
-          Sub-X target
         </div>
         {overlaySessions.map((s, i) => (
           <div key={s.id || i} className="flex items-center gap-1.5">
