@@ -857,7 +857,7 @@ async def get_wca_profile(wca_id: str):
         "country": person.get("country_iso2", ""),
         "gender": person.get("gender", ""),
         "delegate_status": person.get("delegate_status"),
-        "competitions_count": person.get("competition_count") or len(data.get("competition_ids", [])),
+        "competitions_count": data.get("competition_count", 0),
         "personal_bests": pbs,
     }
 
@@ -1024,4 +1024,63 @@ async def head_to_head(payload: HeadToHeadPayload):
         "their_n_comps": len(their_arr),
         "interpretation": interp,
         "tone": tone,
+    }
+
+class BootstrapAveragePayload(BaseModel):
+    times: List[float]
+    target: float
+    solve_count: int = 5
+    n_resamples: int = 10000
+
+@app.post("/analysis/bootstrap-average/")
+async def bootstrap_average(payload: BootstrapAveragePayload):
+    arr = np.array(payload.times)
+    n = len(arr)
+    solve_count = payload.solve_count
+    drop = 1 if solve_count == 5 else 0
+
+    if len(arr) < solve_count:
+        raise HTTPException(status_code=400, detail=f"Need at least {solve_count} solves.")
+
+    rng = np.random.default_rng()
+    simulated_avgs = []
+
+    for _ in range(payload.n_resamples):
+        draws = rng.choice(arr, size=solve_count, replace=True)
+        if drop > 0:
+            draws_sorted = np.sort(draws)
+            trimmed = draws_sorted[drop:-drop]
+            simulated_avgs.append(float(trimmed.mean()))
+        else:
+            simulated_avgs.append(float(draws.mean()))
+
+    simulated_avgs = np.array(simulated_avgs)
+    empirical_rate = float(np.mean(simulated_avgs < payload.target))
+    ci_low = float(np.percentile(simulated_avgs, 2.5))
+    ci_high = float(np.percentile(simulated_avgs, 97.5))
+    bootstrap_std = float(simulated_avgs.std())
+
+    ao_label = f"Ao{solve_count}"
+
+    if empirical_rate == 0:
+        interpretation = f"Based on your training, a sub-{payload.target}s {ao_label} is very unlikely with your current times."
+    else:
+        interpretation = (
+            f"You get a sub-{payload.target}s {ao_label} in {empirical_rate*100:.1f}% of simulated averages "
+            f"({int(empirical_rate * payload.n_resamples):,} out of {payload.n_resamples:,} trials). "
+            f"Your simulated {ao_label} times range from {ci_low:.3f}s to {ci_high:.3f}s (95% CI)."
+        )
+
+    return {
+        "target": payload.target,
+        "solve_count": solve_count,
+        "ao_label": ao_label,
+        "n_resamples": payload.n_resamples,
+        "empirical_rate": round(empirical_rate, 4),
+        "empirical_count": int(np.sum(simulated_avgs < payload.target)),
+        "ci_low": round(ci_low, 3),
+        "ci_high": round(ci_high, 3),
+        "bootstrap_std": round(bootstrap_std, 4),
+        "mean_simulated_avg": round(float(simulated_avgs.mean()), 3),
+        "interpretation": interpretation,
     }

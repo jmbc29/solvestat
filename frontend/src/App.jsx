@@ -62,6 +62,7 @@ function Sidebar({ stats, activeSession, chartTypes, toggleChartType, activeAnal
           {[
             { type: 'line', label: '📈 Line Chart' },
             { type: 'distribution', label: '🔔 Distribution Fit' },
+            { type: 'timeofday', label: '⏰ Time of Day' },
             { type: 'none', label: '👁️ Hide Times' },
           ].map(({ type, label }) => (
             <button
@@ -237,7 +238,7 @@ function Sidebar({ stats, activeSession, chartTypes, toggleChartType, activeAnal
   )
 }
 
-function SortableTab({ id, name, isActive, onClick, onRename }) {
+function SortableTab({ id, name, isActive, onClick, onRename, onDelete }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(name)
@@ -287,9 +288,17 @@ function SortableTab({ id, name, isActive, onClick, onRename }) {
           className="bg-gray-700 text-white text-sm px-1 rounded w-32 outline-none"
         />
       ) : (
-        <span onDoubleClick={(e) => { e.stopPropagation(); setEditing(true) }}>
-          {name}
-        </span>
+        <>
+          <span onDoubleClick={(e) => { e.stopPropagation(); setEditing(true) }}>
+            {name}
+          </span>
+          <span
+            onClick={(e) => { e.stopPropagation(); onDelete() }}
+            className="ml-1 text-gray-500 hover:text-red-400 transition text-xs px-1"
+          >
+            ✕
+          </span>
+        </>
       )}
     </div>
   )
@@ -353,6 +362,14 @@ export default function App() {
   const handleRename = (index, newName) => {
     setSessions((prev) => prev.map((s, i) => i === index ? { ...s, name: newName } : s))
   }
+
+  const handleDelete = (index) => {
+  setSessions((prev) => {
+    const next = prev.filter((_, i) => i !== index)
+    setActiveTab((prev) => Math.min(prev, next.length - 1))
+    return next
+  })
+}
 
   const activeSession = sessions[activeTab]
 
@@ -477,6 +494,7 @@ export default function App() {
                   isActive={activeTab === i}
                   onClick={() => setActiveTab(i)}
                   onRename={(newName) => handleRename(i, newName)}
+                  onDelete={() => handleDelete(i)}
                 />
               ))}
             </SortableContext>
@@ -505,6 +523,15 @@ export default function App() {
                     />
                   </div>
                 )}
+                {chartTypes.includes('timeofday') && (
+  <div className={chartTypes.includes('line') || chartTypes.includes('distribution') ? 'mt-6 pt-6 border-t border-gray-700' : ''}>
+    <SolveChart
+      key="timeofday"
+      {...sharedChartProps}
+      chartType="timeofday"
+    />
+  </div>
+)}
                 {!chartTypes.includes('line') && !chartTypes.includes('distribution') && (
                   <SolveChart
                     key="none"

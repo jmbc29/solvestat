@@ -159,18 +159,201 @@ const overlayColors = [
   'rgba(37,99,235,0.9)',
 ]
 
-const hexToRgba = (hex, alpha) => {
-  const r = parseInt(hex.slice(1, 3), 16)
-  const g = parseInt(hex.slice(3, 5), 16)
-  const b = parseInt(hex.slice(5, 7), 16)
-  return `rgba(${r},${g},${b},${alpha})`
-}
-
 function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, subXTarget, isAverage = false, overlaySessions = [], dataType = 'single', customAoX = 50 }) {
   const [selectedSolve, setSelectedSolve] = useState(null)
   const [binWidth, setBinWidth] = useState(0.5)
   const [binWidthInput, setBinWidthInput] = useState('0.5')
+  const [todInterval, setTodInterval] = useState(60)
+  const [todIntervalInput, setTodIntervalInput] = useState('60')
 
+  // ─── Time of Day chart ───────────────────────────────────────────────────
+  if (chartType === 'timeofday') {
+    const solvesWithTime = solves.filter((s) => s.date && s.penalty !== 'dnf' && s.time !== null)
+
+    const buckets = {}
+    solvesWithTime.forEach((s) => {
+      const parts = s.date.split(' ')
+      if (parts.length < 2) return
+      const timeParts = parts[1].split(':')
+      const h = parseInt(timeParts[0])
+      const m = parseInt(timeParts[1])
+      if (isNaN(h) || isNaN(m)) return
+      const totalMinutes = h * 60 + m
+      const bucketKey = Math.floor(totalMinutes / todInterval) * todInterval
+      if (!buckets[bucketKey]) buckets[bucketKey] = []
+      buckets[bucketKey].push(s.time)
+    })
+
+    const sortedBuckets = Object.keys(buckets).map(Number).sort((a, b) => a - b)
+
+    const pad = (n) => String(n).padStart(2, '0')
+    const formatBucket = (minutes) => {
+      const h = Math.floor(minutes / 60)
+      const m = minutes % 60
+      const endTotal = minutes + todInterval
+      const eh = Math.floor(endTotal / 60) % 24
+      const em = endTotal % 60
+      return `${pad(h)}:${pad(m)}–${pad(eh)}:${pad(em)}`
+    }
+
+    const labels = sortedBuckets.map(formatBucket)
+    const avgTimes = sortedBuckets.map((b) => {
+      const times = buckets[b]
+      return parseFloat((times.reduce((a, c) => a + c, 0) / times.length).toFixed(3))
+    })
+    const counts = sortedBuckets.map((b) => buckets[b].length)
+
+    const allValidTimes = solves.filter((s) => s.penalty !== 'dnf' && s.time).map((s) => s.time)
+    const overallMean = allValidTimes.length > 0
+      ? allValidTimes.reduce((a, b) => a + b, 0) / allValidTimes.length
+      : 0
+
+    const bestSlot = Math.min(...avgTimes)
+    const worstSlot = Math.max(...avgTimes)
+
+    return (
+      <div className="w-full" style={{ height: '70vh' }}>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <label className="text-gray-400 text-sm shrink-0">Interval (min)</label>
+          <input
+            type="number" min="5" max="360" step="5"
+            value={todIntervalInput}
+            onChange={(e) => {
+              setTodIntervalInput(e.target.value)
+              const val = parseInt(e.target.value)
+              if (val >= 5) setTodInterval(val)
+            }}
+            className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-20"
+          />
+          {[15, 30, 60, 120].map((v) => (
+            <button key={v}
+              onClick={() => { setTodInterval(v); setTodIntervalInput(String(v)) }}
+              className={`text-xs px-3 py-1.5 rounded-lg transition ${
+                todInterval === v ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              }`}>
+              {v < 60 ? `${v}m` : `${v / 60}h`}
+            </button>
+          ))}
+          <span className="text-gray-500 text-xs">
+            {sortedBuckets.length} slots · {solvesWithTime.length} solves with timestamps
+          </span>
+          <div className="flex items-center gap-3 ml-2">
+            <span className="flex items-center gap-1.5 text-xs text-gray-400">
+              <span style={{ display: 'inline-block', width: 12, height: 12, backgroundColor: 'rgba(34,197,94,0.6)', borderRadius: 2 }} />
+              Faster than avg
+            </span>
+            <span className="flex items-center gap-1.5 text-xs text-gray-400">
+              <span style={{ display: 'inline-block', width: 12, height: 12, backgroundColor: 'rgba(239,68,68,0.6)', borderRadius: 2 }} />
+              Slower than avg
+            </span>
+          </div>
+        </div>
+
+        {solvesWithTime.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <p className="text-gray-500 text-sm">No solves with timestamp data found.</p>
+          </div>
+        ) : (
+          <div style={{ height: 'calc(70vh - 56px)' }}>
+            <Bar
+              data={{
+                labels,
+                datasets: [
+                  {
+                    type: 'bar',
+                    label: 'Avg solve time (s)',
+                    data: avgTimes,
+                    backgroundColor: avgTimes.map((t) =>
+                      t === bestSlot ? 'rgba(34,197,94,0.85)'
+                      : t === worstSlot ? 'rgba(239,68,68,0.85)'
+                      : t < overallMean ? 'rgba(34,197,94,0.5)'
+                      : 'rgba(239,68,68,0.5)'
+                    ),
+                    borderColor: avgTimes.map((t) =>
+                      t === bestSlot ? 'rgba(34,197,94,1)'
+                      : t === worstSlot ? 'rgba(239,68,68,1)'
+                      : t < overallMean ? 'rgba(34,197,94,0.8)'
+                      : 'rgba(239,68,68,0.8)'
+                    ),
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                    order: 2,
+                  },
+                  {
+                    type: 'line',
+                    label: 'Solve count',
+                    data: counts,
+                    borderColor: 'rgba(147,197,253,0.8)',
+                    backgroundColor: 'transparent',
+                    pointRadius: 4,
+                    pointBackgroundColor: 'rgba(147,197,253,0.8)',
+                    tension: 0.3,
+                    yAxisID: 'y2',
+                    order: 1,
+                  },
+                ],
+              }}
+              options={{
+                maintainAspectRatio: false,
+                responsive: true,
+                plugins: {
+                  legend: { labels: { color: '#d1d5db' } },
+                  tooltip: {
+                    callbacks: {
+                      title: (items) => `Time slot: ${items[0].label}`,
+                      label: (ctx) => ctx.dataset.label === 'Avg solve time (s)'
+                        ? `Avg: ${ctx.parsed.y}s (${ctx.parsed.y < overallMean ? 'faster' : 'slower'} than overall mean)`
+                        : `Solves: ${ctx.parsed.y}`,
+                    }
+                  },
+                  annotation: {
+                    annotations: {
+                      meanLine: {
+                        type: 'line',
+                        scaleID: 'y',
+                        value: overallMean,
+                        borderColor: '#e669d5',
+                        borderWidth: 2,
+                        borderDash: [6, 3],
+                        label: {
+                          content: `Overall mean ${overallMean.toFixed(2)}s`,
+                          display: true,
+                          color: '#e669d5',
+                          backgroundColor: 'rgba(17,24,39,0.8)',
+                          font: { size: 11 },
+                          position: 'end',
+                        }
+                      }
+                    }
+                  }
+                },
+                scales: {
+                  x: {
+                    ticks: { color: '#9ca3af', maxRotation: 45 },
+                    grid: { display: false },
+                    title: { display: true, text: 'Time of day', color: '#9ca3af' },
+                  },
+                  y: {
+                    ticks: { color: '#9ca3af' },
+                    grid: { color: 'rgba(255,255,255,0.05)' },
+                    title: { display: true, text: 'Avg solve time (s)', color: '#9ca3af' },
+                  },
+                  y2: {
+                    position: 'right',
+                    ticks: { color: '#93c5fd' },
+                    grid: { display: false },
+                    title: { display: true, text: 'Solve count', color: '#93c5fd' },
+                  },
+                },
+              }}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ─── Distribution chart ──────────────────────────────────────────────────
   if (chartType === 'distribution') {
     const times = solves
       .filter((s) => s.penalty !== 'dnf')
@@ -226,41 +409,41 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     const annotations = {
       ...(distOverlays.mean ? {
         mean: {
-  type: 'line', scaleID: 'x',
-  value: timeToLabelIndex(mean),
-  borderColor: '#e669d5', borderWidth: 2, borderDash: [6, 3],
-  z: 10,
-  label: {
-    content: `Mean ${mean.toFixed(2)}s`,
-    display: true,
-    color: '#e669d5',
-    backgroundColor: 'rgba(17,24,39,0.8)',
-    font: { size: 11 },
-    position: 'start',
-    rotation: 0,
-    padding: 4,
-    xAdjust: distMeanAboveMedian ? -50 : 50,
-  }
-}
+          type: 'line', scaleID: 'x',
+          value: timeToLabelIndex(mean),
+          borderColor: '#e669d5', borderWidth: 2, borderDash: [6, 3],
+          z: 10,
+          label: {
+            content: `Mean ${mean.toFixed(2)}s`,
+            display: true,
+            color: '#e669d5',
+            backgroundColor: 'rgba(17,24,39,0.8)',
+            font: { size: 11 },
+            position: 'start',
+            rotation: 0,
+            padding: 4,
+            xAdjust: distMeanAboveMedian ? -50 : 50,
+          }
+        }
       } : {}),
       ...(distOverlays.median ? {
         median: {
-  type: 'line', scaleID: 'x',
-  value: timeToLabelIndex(median),
-  borderColor: '#cc50fd', borderWidth: 2, borderDash: [6, 3],
-  z: 10,
-  label: {
-    content: `Median ${median.toFixed(2)}s`,
-    display: true,
-    color: '#cc50fd',
-    backgroundColor: 'rgba(17,24,39,0.8)',
-    font: { size: 11 },
-    position: 'start',
-    rotation: 0,
-    padding: 4,
-    xAdjust: distMeanAboveMedian ? 50 : -50,
-  }
-}
+          type: 'line', scaleID: 'x',
+          value: timeToLabelIndex(median),
+          borderColor: '#cc50fd', borderWidth: 2, borderDash: [6, 3],
+          z: 10,
+          label: {
+            content: `Median ${median.toFixed(2)}s`,
+            display: true,
+            color: '#cc50fd',
+            backgroundColor: 'rgba(17,24,39,0.8)',
+            font: { size: 11 },
+            position: 'start',
+            rotation: 0,
+            padding: 4,
+            xAdjust: distMeanAboveMedian ? 50 : -50,
+          }
+        }
       } : {}),
       ...(distOverlays.subX && subXTarget ? {
         subX: {
@@ -268,58 +451,58 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
           value: timeToLabelIndex(Number(subXTarget)),
           borderColor: '#745be6', borderWidth: 2, borderDash: [6, 3],
           label: {
-  content: `${subXTarget}s`,
-  display: true,
-  color: '#745be6',
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 11 },
-  position: '10%',
-  rotation: 0,
-  padding: 4,
-  xAdjust: 0,
-}
+            content: `${subXTarget}s`,
+            display: true,
+            color: '#745be6',
+            backgroundColor: 'rgba(17,24,39,0.8)',
+            font: { size: 11 },
+            position: '10%',
+            rotation: 0,
+            padding: 4,
+            xAdjust: 0,
+          }
         }
       } : {}),
       ...(distOverlays.sd ? {
         sdBand: {
-  type: 'box',
-  xMin: timeToLabelIndex(mean - sd),
-  xMax: timeToLabelIndex(mean + sd),
-  backgroundColor: 'rgba(228, 156, 185, 0.28)',
-  borderColor: 'rgba(233, 58, 128, 0.9)',
-  borderWidth: 0,
-},
+          type: 'box',
+          xMin: timeToLabelIndex(mean - sd),
+          xMax: timeToLabelIndex(mean + sd),
+          backgroundColor: 'rgba(228, 156, 185, 0.28)',
+          borderColor: 'rgba(233, 58, 128, 0.9)',
+          borderWidth: 0,
+        },
         sdLow: {
           type: 'line', scaleID: 'x',
           value: timeToLabelIndex(mean - sd),
           borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
           label: {
-  content: `-1SD ${(mean - sd).toFixed(2)}s`,
-  display: true,
-  color: 'rgba(233, 58, 128, 0.9)',
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 10 },
-  position: 'end',
-  rotation: 0,
-  padding: 4,
-  xAdjust: 50,
-}
+            content: `-1SD ${(mean - sd).toFixed(2)}s`,
+            display: true,
+            color: 'rgba(233, 58, 128, 0.9)',
+            backgroundColor: 'rgba(17,24,39,0.8)',
+            font: { size: 10 },
+            position: 'end',
+            rotation: 0,
+            padding: 4,
+            xAdjust: 50,
+          }
         },
         sdHigh: {
           type: 'line', scaleID: 'x',
           value: timeToLabelIndex(mean + sd),
           borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
           label: {
-  content: `+1SD ${(mean + sd).toFixed(2)}s`,
-  display: true,
-  color: 'rgba(233, 58, 128, 0.9)',
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 10 },
-  position: 'end',
-  rotation: 0,
-  padding: 4,
-  xAdjust: -50,
-}
+            content: `+1SD ${(mean + sd).toFixed(2)}s`,
+            display: true,
+            color: 'rgba(233, 58, 128, 0.9)',
+            backgroundColor: 'rgba(17,24,39,0.8)',
+            font: { size: 10 },
+            position: 'end',
+            rotation: 0,
+            padding: 4,
+            xAdjust: -50,
+          }
         },
       } : {}),
     }
@@ -362,7 +545,6 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
           const i = Math.min(Math.floor((t - globalMin) / safeBinWidth), globalNBins - 1)
           sBins[i]++
         })
-        // Extract rgba values for hexToRgba fallback — overlayColors are already rgba strings
         return {
           type: 'bar',
           label: s.name,
@@ -435,7 +617,7 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     )
   }
 
-  // Stats for line chart overlays (exclude DNFs)
+  // ─── Line chart ──────────────────────────────────────────────────────────
   const validTimes = solves.filter((s) => s.penalty !== 'dnf').map((s) => s.time)
   const n = validTimes.length
   const lineMean = n > 0 ? validTimes.reduce((a, b) => a + b, 0) / n : 0
@@ -446,23 +628,24 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
   const lineVariance = n > 1 ? validTimes.reduce((a, b) => a + (b - lineMean) ** 2, 0) / (n - 1) : 0
   const lineSd = Math.sqrt(lineVariance)
   const meanAboveMedian = lineMean > lineMedian
+
   const lineAnnotations = {
     ...(distOverlays.mean ? {
       mean: {
         type: 'line', scaleID: 'y', value: lineMean,
         borderColor: '#e669d5', borderWidth: 2, borderDash: [6, 3],
         z: 10,
-        label: { 
-  content: `Mean ${lineMean.toFixed(2)}s`, 
-  display: true, 
-  color: '#e669d5', 
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 11 },
-  position: 'start',
-  rotation: -90,
-  padding: 4,
-  yAdjust: meanAboveMedian ? -50 : 50,
-}
+        label: {
+          content: `Mean ${lineMean.toFixed(2)}s`,
+          display: true,
+          color: '#e669d5',
+          backgroundColor: 'rgba(17,24,39,0.8)',
+          font: { size: 11 },
+          position: 'start',
+          rotation: -90,
+          padding: 4,
+          yAdjust: meanAboveMedian ? -50 : 50,
+        }
       }
     } : {}),
     ...(distOverlays.median ? {
@@ -470,17 +653,17 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
         type: 'line', scaleID: 'y', value: lineMedian,
         borderColor: '#cc50fd', borderWidth: 2, borderDash: [6, 3],
         z: 10,
-        label: { 
-  content: `Median ${lineMedian.toFixed(2)}s`, 
-  display: true, 
-  color: '#cc50fd', 
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 11 },
-  position: 'start',
-  rotation: -90,
-  padding: 4,
-  yAdjust: meanAboveMedian ? 50 : -50,
-}
+        label: {
+          content: `Median ${lineMedian.toFixed(2)}s`,
+          display: true,
+          color: '#cc50fd',
+          backgroundColor: 'rgba(17,24,39,0.8)',
+          font: { size: 11 },
+          position: 'start',
+          rotation: -90,
+          padding: 4,
+          yAdjust: meanAboveMedian ? 50 : -50,
+        }
       }
     } : {}),
     ...(distOverlays.sd ? {
@@ -495,54 +678,53 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
       sdLow: {
         type: 'line', scaleID: 'y', value: lineMean - lineSd,
         borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
-        label: { 
-  content: `-1SD ${(lineMean - lineSd).toFixed(2)}s`, 
-  display: true, 
-  color: 'rgba(233, 58, 128, 0.9)', 
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 10 },
-  position: 'end',
-  rotation: -90,
-  padding: 4,
-  yAdjust: 0,
-}
+        label: {
+          content: `-1SD ${(lineMean - lineSd).toFixed(2)}s`,
+          display: true,
+          color: 'rgba(233, 58, 128, 0.9)',
+          backgroundColor: 'rgba(17,24,39,0.8)',
+          font: { size: 10 },
+          position: 'end',
+          rotation: -90,
+          padding: 4,
+          yAdjust: 0,
+        }
       },
       sdHigh: {
         type: 'line', scaleID: 'y', value: lineMean + lineSd,
         borderColor: 'rgba(233, 58, 128, 0.9)', borderWidth: 2, borderDash: [6, 3],
-        label: { 
-  content: `+1SD ${(lineMean + lineSd).toFixed(2)}s`, 
-  display: true, 
-  color: 'rgba(233, 58, 128, 0.9)', 
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 10 },
-  position: 'end',
-  rotation: -90,
-  padding: 4,
-  yAdjust: -6,
-}
+        label: {
+          content: `+1SD ${(lineMean + lineSd).toFixed(2)}s`,
+          display: true,
+          color: 'rgba(233, 58, 128, 0.9)',
+          backgroundColor: 'rgba(17,24,39,0.8)',
+          font: { size: 10 },
+          position: 'end',
+          rotation: -90,
+          padding: 4,
+          yAdjust: -6,
+        }
       },
     } : {}),
     ...(distOverlays.subX && subXTarget ? {
       subX: {
         type: 'line', scaleID: 'y', value: Number(subXTarget),
         borderColor: '#745be6', borderWidth: 2, borderDash: [6, 3],
-        label: { 
-  content: `${subXTarget}s`, 
-  display: true, 
-  color: '#745be6', 
-  backgroundColor: 'rgba(17,24,39,0.8)',
-  font: { size: 11 },
-  position: '5%',
-  rotation: -90,
-  padding: 4,
-  yAdjust: 0,
-}
+        label: {
+          content: `${subXTarget}s`,
+          display: true,
+          color: '#745be6',
+          backgroundColor: 'rgba(17,24,39,0.8)',
+          font: { size: 11 },
+          position: '5%',
+          rotation: -90,
+          padding: 4,
+          yAdjust: 0,
+        }
       }
     } : {}),
   }
 
-  // Best/worst star markers (exclude DNFs)
   const nonDnfTimes = solves.filter((s) => s.penalty !== 'dnf').map((s) => s.time).filter(Boolean)
   const bestTime = nonDnfTimes.length > 0 ? Math.min(...nonDnfTimes) : null
   const worstTime = nonDnfTimes.length > 0 ? Math.max(...nonDnfTimes) : null
@@ -574,9 +756,7 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     backgroundColor: 'transparent',
     pointBackgroundColor: chartType === 'none' ? 'transparent' : pointColors,
     pointBorderColor: pointColors,
-    pointBorderWidth: solves.map((s) =>
-      s.time === bestTime || s.time === worstTime ? 2 : 0
-    ),
+    pointBorderWidth: solves.map((s) => s.time === bestTime || s.time === worstTime ? 2 : 0),
     pointRadius: chartType === 'none' ? 0 : pointSizes,
     pointHoverRadius: pointSizes.map((s) => s + 3),
     pointHitRadius: pointSizes.map((s) => s + 5),
@@ -603,39 +783,39 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
   }
 
   overlaySessions.forEach((s, i) => {
-  const color = overlayColors[i % overlayColors.length]
-  let data
-  let sessionSolves
-  if (dataType === 'single') {
-    sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
-    data = sessionSolves.map((sv) => sv.time)
-  } else {
-    const x = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
-    sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
-    data = computeAoXTimes(sessionSolves, x)
-  }
+    const color = overlayColors[i % overlayColors.length]
+    let data
+    let sessionSolves
+    if (dataType === 'single') {
+      sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
+      data = sessionSolves.map((sv) => sv.time)
+    } else {
+      const x = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
+      sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
+      data = computeAoXTimes(sessionSolves, x)
+    }
 
-  const sessionPointColors = sessionSolves.map((sv) => {
-    if (sv.penalty === 'dnf') return '#ef4444'
-    if (!isAverage && sv.penalty === 'plus2') return '#eab308'
-    return color
-  })
+    const sessionPointColors = sessionSolves.map((sv) => {
+      if (sv.penalty === 'dnf') return '#ef4444'
+      if (!isAverage && sv.penalty === 'plus2') return '#eab308'
+      return color
+    })
 
-  datasets.push({
-    label: s.name,
-    data,
-    borderColor: color,
-    backgroundColor: 'transparent',
-    pointBackgroundColor: chartType === 'none' ? 'transparent' : sessionPointColors,
-    pointBorderColor: 'transparent',
-    pointRadius: chartType === 'none' ? 0 : 3,
-    pointHoverRadius: 6,
-    pointHitRadius: 8,
-    tension: 0,
-    showLine: chartType !== 'none',
-    borderWidth: 1.5,
+    datasets.push({
+      label: s.name,
+      data,
+      borderColor: color,
+      backgroundColor: 'transparent',
+      pointBackgroundColor: chartType === 'none' ? 'transparent' : sessionPointColors,
+      pointBorderColor: 'transparent',
+      pointRadius: chartType === 'none' ? 0 : 3,
+      pointHoverRadius: 6,
+      pointHitRadius: 8,
+      tension: 0,
+      showLine: chartType !== 'none',
+      borderWidth: 1.5,
+    })
   })
-})
 
   if (showAo5) {
     datasets.push({
@@ -680,9 +860,7 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
   const options = {
     maintainAspectRatio: false,
     responsive: true,
-    elements: {
-      point: { pointStyle: true }
-    },
+    elements: { point: { pointStyle: true } },
     onClick: handleClick,
     plugins: {
       legend: { labels: { color: '#d1d5db' } },
@@ -723,8 +901,6 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
   return (
     <>
       <SolveModal solve={selectedSolve} onClose={() => setSelectedSolve(null)} />
-
-      {/* Legend */}
       <div className="flex flex-wrap gap-4 mb-3 text-xs text-gray-400">
         <div className="flex items-center gap-1.5">
           <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: '#93c5fd' }} />
@@ -753,7 +929,6 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
           </div>
         ))}
       </div>
-
       <div className="w-full" style={{ height: '70vh' }}>
         <Line data={data} options={options} />
       </div>
