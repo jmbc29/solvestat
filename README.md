@@ -13,6 +13,8 @@ SolveStat turns a raw CSV export from a speedcubing timer into an interactive an
 
 Built as a portfolio project by [Jimbo Cai](https://github.com/jmbc29), a data science student.
 
+I have attached an example dataset from one of my cubing sessions named *exampledataset.csv*. Feel free to download it and take a look!
+
 <img width="1512" height="826" alt="Screenshot 2026-08-04 at 11 48 36 PM" src="https://github.com/user-attachments/assets/54bf58c2-812e-4769-86a8-410393609a6c" />
 
 ---
