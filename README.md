@@ -26,6 +26,8 @@ Built as a portfolio project by [Jimbo Cai](https://github.com/jmbc29), a data s
 - **Overlay support** — compare multiple sessions on the same chart
 - **Statistical overlays** — mean, median, ±1 SD band, and sub-X target line on any chart
 
+<img width="1512" height="821" alt="Screenshot 2026-08-04 at 11 49 21 PM" src="https://github.com/user-attachments/assets/9d87960a-8f90-421d-8a9a-9d9b84aa0324" />
+
 ### 📐 Data Modes
 - Single times, Ao5, Ao12, or custom AoX (WCA trimmed mean — drops top and bottom 5%)
 - All chart types and analysis tools respect the selected data mode independently
@@ -40,6 +42,9 @@ Each test runs on raw singles or computed averages, selectable per analysis:
 | **Phase Detection** | PELT changepoint detection (L2 model, BIC-style penalty) |
 | **A/B Test** | Welch's t-test + Mann-Whitney U + Cohen's d + bootstrap CI on mean difference |
 
+<img width="1508" height="737" alt="Screenshot 2026-08-04 at 11 52 32 PM" src="https://github.com/user-attachments/assets/0e37c4ea-03a5-4112-b5dd-1478ba7c8b49" />
+
+
 ### 🏆 WCA Competition Comparison
 - Search real past WCA competitions (live WCA API integration)
 - Select event and round; see all competitor results
@@ -47,6 +52,12 @@ Each test runs on raw singles or computed averages, selectable per analysis:
 - **Advancement probability** — calculates how likely you are to advance to the next round based on competitor counts
 - **PB break probability** — simulates how often your training times would beat your official WCA personal best
 - **Head-to-head simulation** — enter any competitor's WCA ID and simulate win probability based on their competition history vs your training data
+  
+<img width="1205" height="758" alt="Screenshot 2026-08-04 at 11 50 57 PM" src="https://github.com/user-attachments/assets/3d13c909-0d0d-4d89-b403-aad77d490bda" />
+
+<img width="1211" height="682" alt="Screenshot 2026-08-04 at 11 51 14 PM" src="https://github.com/user-attachments/assets/c41bb60a-4bc1-4192-b6f2-2e951e78b731" />
+
+<img width="1208" height="822" alt="Screenshot 2026-08-04 at 11 51 44 PM" src="https://github.com/user-attachments/assets/b51c893b-8c60-45d3-bdd5-91084d0b9184" />
 
 ---
 
