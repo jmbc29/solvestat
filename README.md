@@ -112,16 +112,18 @@ Export your solves from [csTimer](https://cstimer.net) as a CSV. The app expects
 ## Architecture
 
 solvestat/
-├── frontend/          # React + Vite
+├── frontend/
 │   └── src/
-│       ├── App.jsx                  # State management, session handling
+│       ├── App.jsx                  # root component, all state, sidebar, tabs
+│       ├── api.js                   # axios instance with base URL
 │       └── components/
-│           ├── SolveChart.jsx       # Line, distribution, time-of-day charts
-│           ├── HypothesisPanel.jsx  # Statistical analysis tests
-│           ├── WCAPanel.jsx         # WCA competition + profile features
+│           ├── SolveChart.jsx       # all chart types
+│           ├── HypothesisPanel.jsx  # statistical analysis panel
+│           ├── WCAPanel.jsx         # WCA competition + profile panel
 │           └── UploadFile.jsx       # CSV drag-and-drop upload
 └── backend/
-└── main.py        # FastAPI — CSV parsing, stats, WCA proxy, simulations
+    ├── main.py                      # all FastAPI endpoints
+    └── requirements.txt
 
 ---
 
