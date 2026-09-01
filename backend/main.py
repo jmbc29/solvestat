@@ -1,18 +1,25 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import pandas as pd
 import io
+import json
+import re
+from datetime import datetime, timedelta, timezone
 from scipy import stats
 import numpy as np
-import os
 import ruptures as rpt
-from sklearn.linear_model import Ridge
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import cross_val_score
-from anthropic import Anthropic
 import httpx
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from auth import require_user, firebase_available
+import db
 
 app = FastAPI()
 
@@ -117,228 +124,165 @@ async def upload_file(file: UploadFile = File(...)):
     contents = await file.read()
     return process_csv(contents)
 
-@app.post("/hypothesis/one-sample/")
-async def one_sample_test(times: List[float] = Body(...), target: float = 10.0):
-    arr = np.array(times)
-    t_stat, p_value = stats.ttest_1samp(arr, target)
-    mean = arr.mean()
-    std = arr.std(ddof=1)
-    n = len(arr)
-    ci = stats.t.interval(0.95, df=n - 1, loc=mean, scale=stats.sem(arr))
-    is_significant = bool(p_value < 0.05)
-    is_under = bool(mean < target)
-    delta = abs(mean - target)
-    required_n = None
-    additional_solves = None
-    if delta > 1e-9:
-        z_alpha = stats.norm.ppf(0.975)
-        z_power = stats.norm.ppf(0.80)
-        required_n = int(np.ceil(((z_alpha + z_power) * std / delta) ** 2))
-        additional_solves = max(0, required_n - n)
-    if is_significant and is_under:
-        interpretation = f"Your mean ({mean:.3f}s) is statistically significantly under {target}s."
-    elif is_significant and not is_under:
-        interpretation = f"Your mean ({mean:.3f}s) is statistically significantly over {target}s."
-    else:
-        interpretation = f"Not enough evidence to conclude your mean differs from {target}s."
-        if additional_solves is not None and additional_solves > 0:
-            interpretation += (
-                f" To reliably detect a difference of this size (80% power), "
-                f"you would need roughly {required_n} solves total — about {additional_solves} more."
-            )
+
+def _cstimer_solve_time(raw):
+    """csTimer stores solve[0] as [penalty, rawMilliseconds] (or a bare number in
+    older exports). Returns (seconds, penalty_label) or (None, _) if unusable."""
+    if isinstance(raw, list) and len(raw) >= 2:
+        penalty, ms = raw[0], raw[1]
+        try:
+            t = float(ms) / 1000.0
+        except (TypeError, ValueError):
+            return None, "normal"
+        if penalty == -1:
+            return t, "dnf"
+        if isinstance(penalty, (int, float)) and penalty > 0:
+            return t + float(penalty) / 1000.0, "plus2"
+        return t, "normal"
+    try:
+        return float(raw) / 1000.0, "normal"
+    except (TypeError, ValueError):
+        return None, "normal"
+
+
+def _parse_cstimer_session(raw_solves, tz_offset_minutes=0):
+    solves, times = [], []
+    for item in raw_solves:
+        if not isinstance(item, list) or not item:
+            continue
+        t, penalty = _cstimer_solve_time(item[0])
+        if t is None or t <= 0:
+            continue
+        scramble = item[1] if len(item) > 1 and isinstance(item[1], str) else ""
+        comment = item[2] if len(item) > 2 and isinstance(item[2], str) else ""
+        date = ""
+        if len(item) > 3 and isinstance(item[3], (int, float)) and item[3] > 0:
+            dt = datetime.fromtimestamp(item[3], timezone.utc) - timedelta(minutes=tz_offset_minutes)
+            date = dt.strftime("%Y-%m-%d %H:%M:%S")
+        solves.append({
+            "solveNumber": len(solves) + 1,
+            "time": round(t, 3),
+            "scramble": scramble,
+            "comment": comment,
+            "date": date,
+            "penalty": penalty,
+            "ao5": None,
+            "ao12": None,
+        })
+        times.append(t)
+    if not times:
+        return None
+    ao5 = compute_average(times, 5)
+    ao12 = compute_average(times, 12)
+    for j, s in enumerate(solves):
+        s["ao5"], s["ao12"] = ao5[j], ao12[j]
     return {
-        "mean": float(round(mean, 3)),
-        "t_statistic": float(round(t_stat, 4)),
-        "p_value": float(round(p_value, 4)),
-        "confidence_interval": [float(round(ci[0], 3)), float(round(ci[1], 3))],
-        "is_significant": is_significant,
-        "is_under": is_under,
-        "required_n": required_n,
-        "additional_solves": additional_solves,
-        "interpretation": interpretation,
+        "solves": solves,
+        "stats": {
+            "count": len(times),
+            "mean": round(sum(times) / len(times), 3),
+            "best": round(min(times), 3),
+            "worst": round(max(times), 3),
+        },
     }
+
+
+@app.post("/upload/cstimer/")
+async def upload_cstimer(file: UploadFile = File(...), tz_offset_minutes: int = 0):
+    """Parse a full csTimer export (JSON) — every session becomes its own tab."""
+    raw = await file.read()
+    try:
+        blob = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Not a valid csTimer export (expected JSON).")
+    if not isinstance(blob, dict):
+        raise HTTPException(status_code=400, detail="Unexpected csTimer file structure.")
+
+    names = {}
+    sd = blob.get("properties", {}).get("sessionData")
+    if isinstance(sd, str):
+        try:
+            sd = json.loads(sd)
+        except Exception:
+            sd = {}
+    if isinstance(sd, dict):
+        for k, v in sd.items():
+            if isinstance(v, dict) and v.get("name"):
+                names[str(k)] = v["name"]
+
+    out = []
+    for key, val in blob.items():
+        if not key.startswith("session") or key == "sessionN":
+            continue
+        sid = key[len("session"):]
+        if not sid.isdigit():
+            continue
+        raw_solves = val
+        if isinstance(raw_solves, str):
+            try:
+                raw_solves = json.loads(raw_solves)
+            except Exception:
+                continue
+        if not isinstance(raw_solves, list) or not raw_solves:
+            continue
+        parsed = _parse_cstimer_session(raw_solves, tz_offset_minutes)
+        if parsed:
+            out.append({"_sid": int(sid), "name": names.get(sid, f"Session {sid}"), **parsed})
+
+    if not out:
+        raise HTTPException(status_code=400, detail="No sessions with solves found in this file.")
+    out.sort(key=lambda s: s.pop("_sid"))
+    return {"sessions": out}
 
 @app.post("/hypothesis/outlier/")
 async def outlier_test(times: List[float] = Body(...), time: float = 10.0):
     if len(times) == 0:
         raise HTTPException(status_code=400, detail="No valid solves found.")
-    arr = np.array(times)
+    arr = np.array(times, dtype=float)
     n = len(arr)
-    percentile = float(np.mean(arr <= time))
-    rng = np.random.default_rng()
-    n_permutations = 10000
-    draws = rng.choice(arr, size=n_permutations, replace=True)
     mean = float(arr.mean())
+
+    # Exact empirical tail probabilities from the solve history (no resampling —
+    # the quantity is computable directly, and sampling would only add noise).
+    p_le = float(np.mean(arr <= time))
+    p_ge = float(np.mean(arr >= time))
     if time <= mean:
-        p_value = float(np.mean(draws <= time))
+        one_tail_p = p_le
         direction = "fast"
     else:
-        p_value = float(np.mean(draws >= time))
+        one_tail_p = p_ge
         direction = "slow"
-    p_value_two = float(min(p_value * 2, 1.0))
-    is_outlier = bool(p_value_two < 0.05)
+    p_two = float(min(one_tail_p * 2, 1.0))
+    is_outlier = bool(p_two < 0.05)
+    percentile = float(np.mean(arr <= time))
+
     if is_outlier and direction == "fast":
         interpretation = (
-            f"{time}s is unusually fast — only {p_value*100:.1f}% of random draws from your "
-            f"solve history are this fast or faster (p={p_value_two:.4f}). "
-            f"This is a statistically rare performance."
+            f"{time}s is unusually fast — only {one_tail_p*100:.1f}% of your solves are this fast "
+            f"or faster (two-tailed p={p_two:.4f}). A statistically rare performance."
         )
     elif is_outlier and direction == "slow":
         interpretation = (
-            f"{time}s is unusually slow — only {p_value*100:.1f}% of random draws from your "
-            f"solve history are this slow or slower (p={p_value_two:.4f}). "
-            f"This is a statistically rare performance."
+            f"{time}s is unusually slow — only {one_tail_p*100:.1f}% of your solves are this slow "
+            f"or slower (two-tailed p={p_two:.4f}). A statistically rare performance."
         )
     else:
         interpretation = (
             f"{time}s is consistent with your normal performance. "
-            f"{p_value*100:.1f}% of your solves are {'at or below' if direction == 'fast' else 'at or above'} this time "
-            f"(p={p_value_two:.4f}). This could easily happen by chance."
+            f"{one_tail_p*100:.1f}% of your solves are {'at or below' if direction == 'fast' else 'at or above'} this time "
+            f"(two-tailed p={p_two:.4f}). This could easily happen by chance."
         )
     return {
         "input_time": float(time),
         "session_mean": float(round(mean, 3)),
         "session_std": float(round(arr.std(ddof=1), 3)),
         "percentile": float(round(percentile * 100, 2)),
-        "p_value": float(round(p_value_two, 4)),
-        "one_tail_p": float(round(p_value, 4)),
+        "p_value": float(round(p_two, 4)),
+        "one_tail_p": float(round(one_tail_p, 4)),
         "is_outlier": is_outlier,
         "direction": direction,
-        "n_permutations": n_permutations,
+        "n_solves": n,
         "interpretation": interpretation,
-    }
-
-@app.post("/analysis/distribution/")
-async def distribution_fit(times: List[float] = Body(...), sub_x: Optional[float] = None):
-    arr = np.array(times)
-    n = len(arr)
-    log_t = np.log(arr)
-    mu = log_t.mean()
-    sigma = log_t.std(ddof=1)
-    ll_lognorm = float(np.sum(stats.lognorm.logpdf(arr, s=sigma, scale=np.exp(mu))))
-    norm_mean = arr.mean()
-    norm_std = arr.std(ddof=1)
-    ll_norm = float(np.sum(stats.norm.logpdf(arr, loc=norm_mean, scale=norm_std)))
-    better_fit = "lognormal" if ll_lognorm > ll_norm else "normal"
-    counts, edges = np.histogram(arr, bins=40)
-    centers = (edges[:-1] + edges[1:]) / 2
-    bin_width = float(edges[1] - edges[0])
-    fitted_curve = stats.lognorm.pdf(centers, s=sigma, scale=np.exp(mu)) * n * bin_width
-    result = {
-        "n": n,
-        "mu": float(round(mu, 4)),
-        "sigma": float(round(sigma, 4)),
-        "median": float(round(np.exp(mu), 3)),
-        "log_likelihood_lognormal": round(ll_lognorm, 1),
-        "log_likelihood_normal": round(ll_norm, 1),
-        "better_fit": better_fit,
-        "histogram": {
-            "bin_centers": [float(round(c, 2)) for c in centers],
-            "counts": [int(c) for c in counts],
-            "fitted_curve": [float(round(f, 2)) for f in fitted_curve],
-        },
-        "interpretation": (
-            f"A lognormal distribution was fit to your {n} solves via maximum likelihood "
-            f"(mu={mu:.3f}, sigma={sigma:.3f}). The lognormal fits "
-            f"{'better' if better_fit == 'lognormal' else 'worse'} than a normal distribution, "
-            f"{'confirming' if better_fit == 'lognormal' else 'contradicting'} the expected "
-            f"right-skew of solve times."
-        ),
-    }
-    if sub_x is not None:
-        model_prob = float(stats.lognorm.cdf(sub_x, s=sigma, scale=np.exp(mu)))
-        empirical_prob = float(np.mean(arr < sub_x))
-        result["sub_x"] = {
-            "target": float(sub_x),
-            "model_probability": float(round(model_prob * 100, 2)),
-            "empirical_probability": float(round(empirical_prob * 100, 2)),
-            "interpretation": (
-                f"Under the fitted model, {model_prob*100:.1f}% of your solves are expected to be "
-                f"under {sub_x}s (empirically: {empirical_prob*100:.1f}%)."
-            ),
-        }
-    return result
-
-@app.post("/analysis/trend/")
-async def trend_analysis(times: List[float] = Body(...), target: Optional[float] = None):
-    arr = np.array(times)
-    n = len(arr)
-    if n < 10:
-        raise HTTPException(status_code=400, detail="Need at least 10 solves for trend analysis.")
-    x = np.arange(1, n + 1)
-    y = np.log(arr)
-    reg = stats.linregress(x, y)
-    slope, intercept = reg.slope, reg.intercept
-    pct_per_100 = (np.exp(slope * 100) - 1) * 100
-    resid = y - (intercept + slope * x)
-    s = np.sqrt(np.sum(resid ** 2) / (n - 2))
-    sxx = np.sum((x - x.mean()) ** 2)
-    idx = np.linspace(1, n, num=min(200, n))
-    pred_log = intercept + slope * idx
-    se_fit = s * np.sqrt(1 / n + (idx - x.mean()) ** 2 / sxx)
-    t_crit = stats.t.ppf(0.975, n - 2)
-    trend = np.exp(pred_log)
-    upper = np.exp(pred_log + t_crit * se_fit)
-    lower = np.exp(pred_log - t_crit * se_fit)
-    is_improving = bool(slope < 0 and reg.pvalue < 0.05)
-    forecast = None
-    if target is not None and slope < 0:
-        i_target = (np.log(target) - intercept) / slope
-        current_pred = float(np.exp(intercept + slope * n))
-        if i_target <= n:
-            forecast = {
-                "reached": True,
-                "interpretation": (
-                    f"Your fitted trend predicts your typical solve is already at or under "
-                    f"{target}s (current trend value: {current_pred:.2f}s)."
-                ),
-            }
-        else:
-            solves_needed = int(np.ceil(i_target - n))
-            forecast = {
-                "reached": False,
-                "target_solve_number": int(np.ceil(i_target)),
-                "solves_needed": solves_needed,
-                "interpretation": (
-                    f"At your current improvement rate, you are projected to reach {target}s "
-                    f"around solve #{int(np.ceil(i_target))} — roughly {solves_needed} more solves. "
-                    f"This is an extrapolation; improvement usually slows as you get faster."
-                ),
-            }
-    elif target is not None:
-        forecast = {
-            "reached": False,
-            "interpretation": "Your trend is flat or worsening, so no forecast can be made for this target.",
-        }
-    if is_improving:
-        trend_interp = (
-            f"You are improving: solve times decrease by {abs(pct_per_100):.1f}% per 100 solves "
-            f"(p={reg.pvalue:.4f}, statistically significant)."
-        )
-    elif slope < 0:
-        trend_interp = (
-            f"Your times trend slightly downward ({abs(pct_per_100):.1f}% per 100 solves) "
-            f"but the trend is not statistically significant (p={reg.pvalue:.4f})."
-        )
-    else:
-        trend_interp = (
-            f"Your times trend slightly upward ({pct_per_100:.1f}% per 100 solves, "
-            f"p={reg.pvalue:.4f})."
-        )
-    return {
-        "slope": float(round(slope, 6)),
-        "pct_change_per_100": float(round(pct_per_100, 2)),
-        "r_squared": float(round(reg.rvalue ** 2, 4)),
-        "p_value": float(round(reg.pvalue, 6)),
-        "is_improving": is_improving,
-        "curve": {
-            "x": [int(round(i)) for i in idx],
-            "trend": [float(round(t, 3)) for t in trend],
-            "upper": [float(round(u, 3)) for u in upper],
-            "lower": [float(round(l, 3)) for l in lower],
-        },
-        "forecast": forecast,
-        "interpretation": trend_interp,
     }
 
 @app.post("/analysis/changepoints/")
@@ -348,7 +292,14 @@ async def changepoint_detection(times: List[float] = Body(...)):
     if n < 50:
         raise HTTPException(status_code=400, detail="Need at least 50 solves for changepoint detection.")
     algo = rpt.Pelt(model="l2", min_size=max(20, n // 50)).fit(arr)
-    penalty = 3 * np.log(n) * np.var(arr)
+    # Estimate the solve-to-solve noise variance from successive differences
+    # (robust to the level shifts we're trying to detect, unlike total variance).
+    diffs = np.diff(arr)
+    noise_var = float(np.median(np.abs(diffs)) ** 2 / (2 * 0.6745 ** 2)) if len(diffs) else float(np.var(arr))
+    if noise_var <= 0:
+        noise_var = float(np.var(arr)) or 1e-6
+    # BIC-style penalty: one added parameter per changepoint.
+    penalty = 2 * np.log(n) * noise_var
     breakpoints = algo.predict(pen=penalty)
     segments = []
     start = 0
@@ -379,123 +330,45 @@ async def changepoint_detection(times: List[float] = Body(...)):
         "interpretation": " ".join(parts),
     }
 
-@app.post("/analysis/scramble-model/")
-async def scramble_model(solves: List[dict] = Body(...)):
-    data = [(s["scramble"], s["time"]) for s in solves if s.get("scramble")]
-    if len(data) < 100:
-        raise HTTPException(status_code=400, detail="Need at least 100 solves with scrambles.")
-    feature_names = [
-        "n_moves", "n_double_turns", "n_prime_moves", "n_wide_moves",
-        "R_count", "L_count", "U_count", "D_count", "F_count", "B_count", "axis_changes",
-    ]
-    AXIS = {"R": 0, "L": 0, "U": 1, "D": 1, "F": 2, "B": 2}
-    X, y = [], []
-    for scramble, time in data:
-        tokens = scramble.split()
-        faces = [t[0].upper() for t in tokens if t and t[0].upper() in AXIS]
-        axis_changes = sum(1 for i in range(1, len(faces)) if AXIS[faces[i]] != AXIS[faces[i - 1]])
-        row = [
-            len(tokens), sum(1 for t in tokens if "2" in t), sum(1 for t in tokens if "'" in t),
-            sum(1 for t in tokens if "w" in t.lower()), faces.count("R"), faces.count("L"),
-            faces.count("U"), faces.count("D"), faces.count("F"), faces.count("B"), axis_changes,
-        ]
-        X.append(row)
-        y.append(time)
-    X = np.array(X, dtype=float)
-    y = np.array(y, dtype=float)
-    ridge_r2 = cross_val_score(Ridge(alpha=1.0), X, y, cv=5, scoring="r2")
-    rf_r2 = cross_val_score(
-        RandomForestRegressor(n_estimators=100, max_depth=6, random_state=42, n_jobs=-1),
-        X, y, cv=5, scoring="r2",
-    )
-    rf = RandomForestRegressor(n_estimators=100, max_depth=6, random_state=42, n_jobs=-1).fit(X, y)
-    importances = sorted(zip(feature_names, rf.feature_importances_), key=lambda t: -t[1])[:5]
-    best_r2 = float(max(ridge_r2.mean(), rf_r2.mean()))
-    if best_r2 < 0.02:
+@app.post("/analysis/bootstrap/")
+async def bootstrap_analysis(times: List[float] = Body(...), target: float = 10.0):
+    arr = np.array(times, dtype=float)
+    n = len(arr)
+    if n == 0:
+        raise HTTPException(status_code=400, detail="No valid solves found.")
+    k = int(np.sum(arr < target))
+    p = k / n
+
+    # Wilson score interval for the proportion. Unlike the percentile bootstrap it
+    # stays sensible at the boundary — with 0 hits it still reports an upper bound
+    # instead of collapsing to [0%, 0%].
+    z = 1.959963984540054  # standard normal 97.5th percentile
+    denom = 1 + z ** 2 / n
+    centre = (p + z ** 2 / (2 * n)) / denom
+    half = (z / denom) * np.sqrt(p * (1 - p) / n + z ** 2 / (4 * n ** 2))
+    ci_low = float(max(0.0, centre - half))
+    ci_high = float(min(1.0, centre + half))
+    se = float(np.sqrt(p * (1 - p) / n))
+
+    if k == 0:
         interpretation = (
-            f"Scramble features explain essentially none of your solve time variance "
-            f"(best cross-validated R² = {best_r2:.4f})."
+            f"None of your {n} solves are under {target}s. With 0 hits the true rate isn't "
+            f"exactly zero — it's below {ci_high*100:.1f}% with 95% confidence (Wilson interval)."
         )
     else:
-        interpretation = f"Scramble features explain {best_r2*100:.1f}% of solve time variance."
-    return {
-        "n_solves": len(y),
-        "ridge_cv_r2": float(round(ridge_r2.mean(), 4)),
-        "random_forest_cv_r2": float(round(rf_r2.mean(), 4)),
-        "top_features": [{"name": n_, "importance": float(round(i, 4))} for n_, i in importances],
-        "interpretation": interpretation,
-    }
-
-@app.post("/analysis/insights/")
-async def ai_insights(payload: dict = Body(...)):
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY not set on the server.")
-    times = np.array(payload["times"])
-    penalties = payload.get("penalties", [])
-    name = payload.get("name", "session")
-    n = len(times)
-    half = n // 2
-    x = np.arange(1, n + 1)
-    reg = stats.linregress(x, np.log(times))
-    pct_per_100 = (np.exp(reg.slope * 100) - 1) * 100
-    summary = {
-        "session_name": name, "solve_count": n,
-        "mean": round(float(times.mean()), 3), "median": round(float(np.median(times)), 3),
-        "std_dev": round(float(times.std(ddof=1)), 3), "best": round(float(times.min()), 3),
-        "worst": round(float(times.max()), 3),
-        "first_half_mean": round(float(times[:half].mean()), 3),
-        "second_half_mean": round(float(times[half:].mean()), 3),
-        "trend_pct_per_100_solves": round(float(pct_per_100), 2),
-        "trend_p_value": round(float(reg.pvalue), 5),
-        "plus2_rate_pct": round(100 * penalties.count("plus2") / n, 2) if penalties else None,
-        "dnf_count_excluded": penalties.count("dnf") if penalties else None,
-        "consistency_cv_pct": round(float(times.std(ddof=1) / times.mean() * 100), 1),
-    }
-    prompt = (
-        "You are a speedcubing coach analyzing a cuber's session statistics. "
-        "Write a short, specific, encouraging-but-honest coaching summary (3 short paragraphs max). "
-        "Reference the actual numbers. Cover: overall performance and trend, consistency, "
-        "and one concrete suggestion. Do not use bullet points or headers, just prose.\n\n"
-        f"Session statistics:\n{summary}"
-    )
-    client = Anthropic()
-    msg = client.messages.create(
-        model="claude-sonnet-4-6", max_tokens=500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return {"insights": msg.content[0].text, "summary": summary}
-
-@app.post("/analysis/bootstrap/")
-async def bootstrap_analysis(times: List[float] = Body(...), target: float = 10.0, n_resamples: int = 10000):
-    arr = np.array(times)
-    n = len(arr)
-    empirical_rate = float(np.mean(arr < target))
-    rng = np.random.default_rng()
-    bootstrap_rates = []
-    for _ in range(n_resamples):
-        resample = rng.choice(arr, size=n, replace=True)
-        bootstrap_rates.append(np.mean(resample < target))
-    bootstrap_rates = np.array(bootstrap_rates)
-    ci_low = float(np.percentile(bootstrap_rates, 2.5))
-    ci_high = float(np.percentile(bootstrap_rates, 97.5))
-    bootstrap_std = float(bootstrap_rates.std())
-    if empirical_rate == 0:
-        interpretation = f"None of your solves are under {target}s."
-    else:
         interpretation = (
-            f"You go sub-{target}s on {empirical_rate*100:.1f}% of solves "
-            f"({int(empirical_rate * n)} out of {n}). "
-            f"Based on {n_resamples:,} bootstrap resamples, your true sub-{target}s rate "
-            f"is between {ci_low*100:.1f}% and {ci_high*100:.1f}% with 95% confidence."
+            f"You go sub-{target}s on {p*100:.1f}% of solves ({k} out of {n}). "
+            f"95% confidence interval (Wilson score): {ci_low*100:.1f}% to {ci_high*100:.1f}%."
         )
     return {
         "target": float(target),
         "n_solves": n,
-        "empirical_rate": float(round(empirical_rate, 4)),
-        "empirical_count": int(np.sum(arr < target)),
+        "empirical_rate": float(round(p, 4)),
+        "empirical_count": k,
         "ci_low": float(round(ci_low, 4)),
         "ci_high": float(round(ci_high, 4)),
-        "bootstrap_std": float(round(bootstrap_std, 4)),
+        "bootstrap_std": float(round(se, 4)),
+        "ci_method": "wilson",
         "interpretation": interpretation,
     }
 
@@ -519,7 +392,11 @@ async def ab_test(payload: ABTestPayload):
     n_b = len(b)
     t_stat, p_welch = stats.ttest_ind(a, b, equal_var=False)
     u_stat, p_mann = stats.mannwhitneyu(a, b, alternative='two-sided')
-    pooled_std = np.sqrt((std_a ** 2 + std_b ** 2) / 2)
+    # Degrees-of-freedom-weighted pooled SD (correct when the two sessions differ
+    # in size — the simple average of variances is only right when n_a == n_b).
+    pooled_std = float(np.sqrt(
+        ((n_a - 1) * std_a ** 2 + (n_b - 1) * std_b ** 2) / (n_a + n_b - 2)
+    )) if (n_a + n_b - 2) > 0 else 0.0
     cohens_d = float((mean_a - mean_b) / pooled_std) if pooled_std > 0 else 0.0
     abs_d = abs(cohens_d)
     if abs_d < 0.2: effect_label = "negligible"
@@ -576,29 +453,24 @@ async def ab_test(payload: ABTestPayload):
 # ─── WCA endpoints ────────────────────────────────────────────────────────────
 
 @app.get("/wca/competitions/search")
-async def search_competitions(query: Optional[str] = None):
-    """Search WCA competitions by name, or return recent past competitions if no query."""
+async def search_competitions(query: Optional[str] = None, upcoming: bool = False):
+    """Search WCA competitions by name. Defaults to recent past competitions;
+    pass upcoming=true for future competitions (soonest first)."""
     from datetime import date
     today = date.today().isoformat()
 
+    params = {"per_page": 25}
+    if upcoming:
+        params["start"] = today
+        params["sort"] = "start_date"
+    else:
+        params["end"] = today
+        params["sort"] = "-start_date"
+    if query and query.strip():
+        params["q"] = query.strip()
+
     async with httpx.AsyncClient(timeout=15) as client:
-        if query and query.strip():
-            # Search by name, past only, most recent first
-            params = {
-                "q": query.strip(),
-                "per_page": 20,
-                "end": today,
-                "sort": "-start_date",
-            }
-            resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
-        else:
-            # No query — return recent past competitions
-            params = {
-                "per_page": 20,
-                "end": today,
-                "sort": "-start_date",
-            }
-            resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
+        resp = await client.get(f"{WCA_API}/competitions", params=params, headers=WCA_HEADERS)
 
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail="WCA API error.")
@@ -617,6 +489,103 @@ async def search_competitions(query: Optional[str] = None):
         }
         for c in comps
     ]
+
+
+@app.get("/wca/competitions/{comp_id}/psych-sheet/{event_id}")
+async def get_psych_sheet(comp_id: str, event_id: str):
+    """Ranked psych sheet for an upcoming competition, built from the public WCIF.
+
+    Ranks accepted registrants by their lifetime PB average for the event
+    (falling back to PB single when they have no average PB yet).
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{WCA_API}/competitions/{comp_id}/wcif/public", headers=WCA_HEADERS
+        )
+    if resp.status_code in (403, 404):
+        raise HTTPException(
+            status_code=404,
+            detail="This competition hasn't published its registration list yet.",
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail="WCA API error.")
+
+    wcif = resp.json()
+    event_ids = [e["id"] for e in wcif.get("events", [])]
+    if event_id not in event_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"This competition doesn't hold that event. Events: {', '.join(event_ids)}",
+        )
+
+    ranked = []
+    unranked = 0
+    for p in wcif.get("persons", []):
+        reg = p.get("registration") or {}
+        if reg.get("status") != "accepted":
+            continue
+        if event_id not in (reg.get("eventIds") or []):
+            continue
+        pbs = p.get("personalBests", [])
+        avg = next(
+            (b["best"] for b in pbs if b["eventId"] == event_id and b["type"] == "average"),
+            None,
+        )
+        single = next(
+            (b["best"] for b in pbs if b["eventId"] == event_id and b["type"] == "single"),
+            None,
+        )
+        result_cs = avg if (avg and avg > 0) else single
+        if not result_cs or result_cs <= 0:
+            unranked += 1
+            continue
+        ranked.append({
+            "name": p.get("name", "Unknown"),
+            "wca_id": p.get("wcaId") or "",
+            "country": p.get("countryIso2", ""),
+            "average": round(result_cs / 100, 3),
+            "best": round(single / 100, 3) if single and single > 0 else None,
+            "has_average": bool(avg and avg > 0),
+        })
+
+    ranked.sort(key=lambda x: x["average"])
+    n_field = len(ranked)
+
+    rounds = []
+    next_round_count = None
+    for e in wcif.get("events", []):
+        if e["id"] != event_id:
+            continue
+        rlist = e.get("rounds", [])
+        for i, r in enumerate(rlist):
+            last = i == len(rlist) - 1
+            rounds.append({
+                "id": r.get("id", f"{event_id}-r{i + 1}"),
+                "label": "Final" if (last and len(rlist) > 1) else f"Round {i + 1}",
+                "competitor_count": n_field if i == 0 else None,
+            })
+        if len(rlist) >= 2:
+            adv = rlist[0].get("advancementCondition") or {}
+            if adv.get("type") == "ranking":
+                next_round_count = min(int(adv["level"]), n_field)
+            elif adv.get("type") == "percent" and int(adv["level"]) < 100:
+                next_round_count = max(1, int(n_field * int(adv["level"]) / 100))
+        break
+
+    return {
+        "competition_id": comp_id,
+        "event_id": event_id,
+        "name": wcif.get("name", comp_id),
+        "round": rounds[0]["id"] if rounds else f"{event_id}-r1",
+        "rounds": rounds,
+        "next_round_count": next_round_count,
+        "is_final": len(rounds) <= 1,
+        "is_psych_sheet": True,
+        "competitor_count": n_field,
+        "unranked_count": unranked,
+        "solve_count": EVENT_SOLVE_COUNTS.get(event_id, 5),
+        "competitors": ranked,
+    }
 
 
 @app.get("/wca/competitions/{comp_id}/results/{event_id}")
@@ -730,18 +699,26 @@ class WCASimPayload(BaseModel):
     n_simulations: int = 10000
     solve_count: int = 5
     next_round_count: Optional[int] = None
+    # Per-trial coefficient of variation applied to each competitor's average, so
+    # opponents aren't treated as fixed points (used for psych-sheet fields where
+    # the listed number is a lifetime PB, not what they'll actually average).
+    opponent_cv: float = 0.0
 
 @app.post("/wca/simulate")
 async def simulate_placement(payload: WCASimPayload):
     """Monte Carlo simulation: sample averages from user's distribution and rank against field."""
     arr = np.array(payload.times)
-    competitor_avgs = np.array(sorted(payload.competitor_averages))
+    competitor_avgs = np.array(sorted(payload.competitor_averages), dtype=float)
     n_competitors = len(competitor_avgs)
     solve_count = payload.solve_count
     drop = 1 if solve_count == 5 else 0
 
     if len(arr) < solve_count:
         raise HTTPException(status_code=400, detail=f"Need at least {solve_count} solves.")
+
+    cv = float(min(max(payload.opponent_cv, 0.0), 0.5))
+    # lognormal sigma that yields the requested CV; mean offset keeps E[multiplier] = 1
+    opp_sigma = float(np.sqrt(np.log(1 + cv ** 2))) if cv > 0 else 0.0
 
     rng = np.random.default_rng()
     placements = []
@@ -754,7 +731,12 @@ async def simulate_placement(payload: WCASimPayload):
             user_avg = float(trimmed.mean())
         else:
             user_avg = float(draws.mean())
-        place = int(np.sum(competitor_avgs < user_avg)) + 1
+        if opp_sigma > 0:
+            noise = rng.lognormal(mean=-0.5 * opp_sigma ** 2, sigma=opp_sigma, size=n_competitors)
+            field = competitor_avgs * noise
+            place = int(np.sum(field < user_avg)) + 1
+        else:
+            place = int(np.sum(competitor_avgs < user_avg)) + 1
         placements.append(place)
 
     placements = np.array(placements)
@@ -805,9 +787,16 @@ async def simulate_placement(payload: WCASimPayload):
     if advance_prob is not None:
         interpretation += f" Advancement probability to next round: {advance_prob:.1f}%."
 
+    if cv > 0:
+        interpretation += (
+            f" Each competitor's result is varied ±{cv * 100:.0f}% per trial to reflect "
+            f"day-to-day form rather than treating their listed average as fixed."
+        )
+
     return {
         "n_competitors": n_competitors,
         "n_simulations": payload.n_simulations,
+        "opponent_cv": cv,
         "median_place": median_place,
         "mean_place": round(mean_place, 1),
         "ci_low": ci_low,
@@ -1084,3 +1073,127 @@ async def bootstrap_average(payload: BootstrapAveragePayload):
         "mean_simulated_avg": round(float(simulated_avgs.mean()), 3),
         "interpretation": interpretation,
     }
+
+
+# ─── Accounts + cloud storage (Firebase Auth + MongoDB Atlas) ─────────────────
+
+def _require_db():
+    if not db.db_available():
+        raise HTTPException(status_code=503, detail="Database is not configured on the server.")
+
+
+@app.get("/config")
+async def config_status():
+    """Lets the frontend know whether cloud features are available."""
+    return {"auth": firebase_available(), "db": db.db_available()}
+
+
+@app.get("/me")
+async def get_me(user: dict = Depends(require_user)):
+    _require_db()
+    record = db.get_or_create_user(user["uid"], user.get("email", ""), user.get("name", ""))
+    totals = db.user_totals(user["uid"])
+    return {
+        "uid": record["uid"],
+        "email": record.get("email", ""),
+        "name": record.get("name", ""),
+        "wca_id": record.get("wcaId", ""),
+        "handle": record.get("handle") or "",
+        "public_name": record.get("publicName", ""),
+        "provider": user.get("provider", ""),
+        "picture": user.get("picture", ""),
+        "created_at": record["createdAt"].isoformat() if record.get("createdAt") else None,
+        "session_count": totals["session_count"],
+        "total_solves": totals["total_solves"],
+    }
+
+
+class WcaIdPayload(BaseModel):
+    wca_id: str
+
+
+@app.put("/me/wca-id")
+async def update_wca_id(payload: WcaIdPayload, user: dict = Depends(require_user)):
+    _require_db()
+    db.get_or_create_user(user["uid"], user.get("email", ""), user.get("name", ""))
+    wca_id = payload.wca_id.strip().upper()
+    record = db.set_wca_id(user["uid"], wca_id)
+    return {"wca_id": record.get("wcaId", "")}
+
+
+_HANDLE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])$")
+
+
+class HandlePayload(BaseModel):
+    handle: str
+    public_name: Optional[str] = None
+
+
+@app.put("/me/handle")
+async def update_handle(payload: HandlePayload, user: dict = Depends(require_user)):
+    _require_db()
+    db.get_or_create_user(user["uid"], user.get("email", ""), user.get("name", ""))
+    handle = payload.handle.strip().lower()
+    if handle and not _HANDLE_RE.match(handle):
+        raise HTTPException(
+            status_code=400,
+            detail="Handle must be 3–30 characters: lowercase letters, numbers, and hyphens.",
+        )
+    try:
+        record = db.set_handle(user["uid"], handle, payload.public_name)
+    except db.HandleTaken:
+        raise HTTPException(status_code=409, detail="That handle is already taken.")
+    return {"handle": record.get("handle") or "", "public_name": record.get("publicName", "")}
+
+
+@app.get("/sessions")
+async def get_sessions(user: dict = Depends(require_user)):
+    _require_db()
+    return db.list_sessions(user["uid"])
+
+
+class SessionPayload(BaseModel):
+    name: str
+    solves: List[dict]
+    stats: dict = {}
+
+
+@app.post("/sessions")
+async def post_session(payload: SessionPayload, user: dict = Depends(require_user)):
+    _require_db()
+    if not payload.solves:
+        raise HTTPException(status_code=400, detail="Session has no solves.")
+    db.get_or_create_user(user["uid"], user.get("email", ""), user.get("name", ""))
+    return db.create_session(user["uid"], payload.name.strip() or "session", payload.solves, payload.stats)
+
+
+class SessionUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    is_public: Optional[bool] = None
+
+
+@app.patch("/sessions/{session_id}")
+async def patch_session(session_id: str, payload: SessionUpdatePayload, user: dict = Depends(require_user)):
+    _require_db()
+    name = payload.name.strip() or "session" if payload.name is not None else None
+    result = db.update_session(user["uid"], session_id, name=name, is_public=payload.is_public)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return result
+
+
+@app.get("/public/{handle}")
+async def public_profile(handle: str):
+    _require_db()
+    profile = db.get_public_profile(handle)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="No public profile found for that handle.")
+    return profile
+
+
+@app.delete("/sessions/{session_id}")
+async def remove_session(session_id: str, user: dict = Depends(require_user)):
+    _require_db()
+    if not db.delete_session(user["uid"], session_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"deleted": True}

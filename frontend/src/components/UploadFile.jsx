@@ -10,8 +10,12 @@ function UploadFile({ onUpload, compact }) {
   const onDrop = useCallback(async (acceptedFiles) => {
     const file = acceptedFiles[0]
     if (!file) return
-    if (!file.name.endsWith('.csv')) {
-      setStatus('⚠️ .csv only')
+
+    const name = file.name.toLowerCase()
+    const isCsv = name.endsWith('.csv')
+    const isCsTimer = name.endsWith('.txt') || name.endsWith('.json') || !name.includes('.')
+    if (!isCsv && !isCsTimer) {
+      setStatus('⚠️ .csv or csTimer export')
       return
     }
 
@@ -20,12 +24,19 @@ function UploadFile({ onUpload, compact }) {
     formData.append('file', file)
 
     try {
-      const res = await axios.post(`${API}/upload/`, formData)
-      setStatus(null)
-      if (onUpload) onUpload(res.data, file.name)
+      if (isCsv) {
+        const res = await axios.post(`${API}/upload/`, formData)
+        setStatus(null)
+        onUpload?.(res.data, file.name)
+      } else {
+        const tz = new Date().getTimezoneOffset()
+        const res = await axios.post(`${API}/upload/cstimer/?tz_offset_minutes=${tz}`, formData)
+        setStatus(null)
+        onUpload?.(res.data, file.name)
+      }
     } catch (err) {
       console.error(err)
-      setStatus('❌')
+      setStatus(err.response?.data?.detail ? '❌ ' + err.response.data.detail : '❌')
     }
   }, [onUpload])
 
@@ -52,7 +63,7 @@ function UploadFile({ onUpload, compact }) {
       <div className="flex flex-col items-center justify-center text-gray-300 space-y-3">
         <img src="/UploadFileLogo.svg" alt="Upload Logo" style={{ width: '100px', height: '100px' }} className="my-4" />
         <p className="text-sm font-semibold">Click to upload or drag a file</p>
-        <p className="text-xs text-gray-400">Only .csv files are supported</p>
+        <p className="text-xs text-gray-400">A csTimer CSV, or a full csTimer export (all sessions)</p>
       </div>
     </div>
   )

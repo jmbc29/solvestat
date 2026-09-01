@@ -1,2 +1,11 @@
 .venv
 __pycache__
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Firebase service account
+serviceAccount*.json
+firebase-service-account*.json

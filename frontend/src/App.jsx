@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   DndContext,
   closestCenter,
@@ -17,12 +17,43 @@ import UploadFile from './components/UploadFile'
 import SolveChart from './components/SolveChart'
 import HypothesisPanel from './components/HypothesisPanel'
 import WCAPanel from './components/WCAPanel'
+import AuthPage from './components/AuthPage'
+import ProfilePage from './components/ProfilePage'
+import { useAuth } from './auth/AuthContext'
+import { fetchMe, listSessions, saveSession, deleteSession, renameSession, setSessionVisibility } from './api'
+import { computeAoX } from './lib/aox'
 import './index.css'
 
-function Sidebar({ stats, activeSession, chartTypes, toggleChartType, activeAnalysis, setActiveAnalysis, filters, toggleFilter, distOverlays, toggleDistOverlay, subXTarget, setSubXTarget, dataType, setDataType, customAoX, setCustomAoX, customAoXInput, setCustomAoXInput, sessions, activeTab, overlaySessionIds, toggleOverlaySession }) {
+function Sidebar({ stats, activeSession, chartTypes, toggleChartType, activeAnalysis, setActiveAnalysis, filters, toggleFilter, distOverlays, toggleDistOverlay, subXTarget, setSubXTarget, dataType, setDataType, setCustomAoX, customAoXInput, setCustomAoXInput, sessions, activeTab, overlaySessionIds, toggleOverlaySession, authEnabled, user, me, onSignIn, onProfile, onLogout }) {
   return (
     <div className="w-64 min-h-screen bg-gray-800 border-r border-gray-700 p-4 flex flex-col gap-6 shrink-0 overflow-y-auto">
       <h2 className="text-3xl font-bold text-white">SolveStat</h2>
+
+      {/* Account */}
+      {authEnabled && (
+        <div className="-mt-3">
+          {user ? (
+            <div className="flex flex-col gap-1.5">
+              <button
+                onClick={onProfile}
+                className="text-sm px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-left truncate"
+              >
+                👤 {me?.name || user.email}
+              </button>
+              <button onClick={onLogout} className="text-xs text-gray-400 hover:text-red-400 text-left px-3">
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={onSignIn}
+              className="text-sm px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white w-full transition"
+            >
+              ☁️ Sign in to sync
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Stats Panel */}
       <div>
@@ -317,6 +348,84 @@ export default function App() {
   const [customAoXInput, setCustomAoXInput] = useState('50')
   const [overlaySessionIds, setOverlaySessionIds] = useState([])
 
+  const { user, enabled: authEnabled, logout } = useAuth()
+  const [view, setView] = useState('dashboard')
+  const [showAuth, setShowAuth] = useState(false)
+  const [me, setMe] = useState(null)
+  const [cloudBusy, setCloudBusy] = useState(false)
+  const loadedUidRef = useRef(null)
+
+  const refreshMe = async () => {
+    try { setMe(await fetchMe()) } catch { /* ignore */ }
+  }
+
+  // Load / unload the signed-in user's cloud data.
+  useEffect(() => {
+    if (!user) {
+      if (loadedUidRef.current !== null) {
+        loadedUidRef.current = null
+        setMe(null)
+        setView('dashboard')
+        setSessions((prev) => prev.filter((s) => !s.cloudId))
+        setActiveTab(0)
+      }
+      return
+    }
+    if (loadedUidRef.current === user.uid) return
+    loadedUidRef.current = user.uid
+    ;(async () => {
+      setCloudBusy(true)
+      try {
+        const [profile, cloud] = await Promise.all([fetchMe(), listSessions()])
+        setMe(profile)
+        setSessions((prev) => {
+          const guests = prev.filter((s) => !s.cloudId)
+          const cloudSessions = cloud.map((c) => ({
+            id: `cloud-${c.id}`,
+            cloudId: c.id,
+            name: c.name,
+            solves: c.solves,
+            stats: c.stats,
+            isPublic: c.isPublic,
+          }))
+          return [...cloudSessions, ...guests]
+        })
+      } catch (e) {
+        console.error('Failed to load cloud sessions', e)
+      } finally {
+        setCloudBusy(false)
+      }
+    })()
+  }, [user])
+
+  const handleLogout = async () => {
+    try { await logout() } catch (e) { console.error(e) }
+  }
+
+  const toggleSessionPublic = async (cloudId, isPublic) => {
+    try {
+      await setSessionVisibility(cloudId, isPublic)
+      setSessions((prev) => prev.map((s) => (s.cloudId === cloudId ? { ...s, isPublic } : s)))
+    } catch (e) {
+      console.error('Failed to update session visibility', e)
+    }
+  }
+
+  const saveSessionToCloud = async (index) => {
+    const s = sessions[index]
+    if (!s || s.cloudId || !user) return
+    setCloudBusy(true)
+    try {
+      const saved = await saveSession({ name: s.name, solves: s.solves, stats: s.stats })
+      setSessions((prev) => prev.map((x, i) => (i === index ? { ...x, cloudId: saved.id } : x)))
+      refreshMe()
+    } catch (e) {
+      console.error('Failed to save session to cloud', e)
+    } finally {
+      setCloudBusy(false)
+    }
+  }
+
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 5 },
   }))
@@ -342,9 +451,29 @@ export default function App() {
     prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
   )
 
-  const handleUpload = (data, fileName) => {
-    setSessions((prev) => [...prev, { id: crypto.randomUUID(), name: fileName, solves: data.solves, stats: data.stats }])
-    setActiveTab(sessions.length)
+  const handleUpload = async (data, fileName) => {
+    // A CSV returns { solves, stats }; a full csTimer export returns { sessions: [...] }.
+    const incoming = Array.isArray(data.sessions)
+      ? data.sessions.map((s) => ({ name: s.name || fileName, solves: s.solves, stats: s.stats }))
+      : [{ name: fileName, solves: data.solves, stats: data.stats }]
+    const withIds = incoming.map((s) => ({ ...s, id: crypto.randomUUID() }))
+
+    setSessions((prev) => {
+      setActiveTab(prev.length)
+      return [...prev, ...withIds]
+    })
+
+    if (user) {
+      for (const s of withIds) {
+        try {
+          const saved = await saveSession({ name: s.name, solves: s.solves, stats: s.stats })
+          setSessions((prev) => prev.map((x) => (x.id === s.id ? { ...x, cloudId: saved.id } : x)))
+        } catch (e) {
+          console.error('Failed to save session to cloud', e)
+        }
+      }
+      refreshMe()
+    }
   }
 
   const handleDragEnd = (event) => {
@@ -360,10 +489,18 @@ export default function App() {
   }
 
   const handleRename = (index, newName) => {
+    const target = sessions[index]
     setSessions((prev) => prev.map((s, i) => i === index ? { ...s, name: newName } : s))
+    if (target?.cloudId && user) {
+      renameSession(target.cloudId, newName).catch((e) => console.error('Cloud rename failed', e))
+    }
   }
 
   const handleDelete = (index) => {
+  const target = sessions[index]
+  if (target?.cloudId && user) {
+    deleteSession(target.cloudId).then(refreshMe).catch((e) => console.error('Cloud delete failed', e))
+  }
   setSessions((prev) => {
     const next = prev.filter((_, i) => i !== index)
     setActiveTab((prev) => Math.min(prev, next.length - 1))
@@ -383,31 +520,6 @@ export default function App() {
     )
   }) : []
 
-  const computeAoX = (solves, x) => {
-    const drop = Math.ceil(0.05 * x)
-    const result = []
-    for (let i = 0; i < solves.length; i++) {
-      if (i < x - 1) { result.push(null); continue }
-      const window = solves.slice(i - x + 1, i + 1)
-      const dnfCount = window.filter((s) => s.penalty === 'dnf').length
-      if (dnfCount > drop) {
-        const avgTime = parseFloat((window.reduce((a, b) => a + b.time, 0) / window.length).toFixed(3))
-        result.push({ time: avgTime, isDnf: true, window })
-        continue
-      }
-      const times = window.map((s) => s.time).sort((a, b) => a - b)
-      const trimmed = times.slice(drop, times.length - drop)
-      result.push({
-        time: parseFloat((trimmed.reduce((a, b) => a + b, 0) / trimmed.length).toFixed(3)),
-        isDnf: false,
-        window,
-        trimmedBest: times.slice(0, drop),
-        trimmedWorst: times.slice(times.length - drop),
-      })
-    }
-    return result
-  }
-
   const getChartData = () => {
     if (dataType === 'single') return filteredSolves
     const x = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
@@ -418,6 +530,7 @@ export default function App() {
         time: aoVals[i]?.time ?? null,
         penalty: aoVals[i]?.isDnf ? 'dnf' : 'normal',
         windowSolves: aoVals[i]?.window ?? null,
+        windowTrimmed: aoVals[i]?.trimmedIndices ?? null,
       }))
       .filter((s) => s.time !== null)
   }
@@ -437,9 +550,31 @@ export default function App() {
     customAoX,
   }
 
+  const authModal = showAuth && authEnabled && (
+    <AuthPage onClose={() => setShowAuth(false)} onSuccess={() => setShowAuth(false)} />
+  )
+
+  if (view === 'profile' && user) {
+    return (
+      <div className="min-h-screen w-full bg-gray-900 text-white p-6">
+        {authModal}
+        <ProfilePage
+          me={me}
+          cloudSessions={sessions.filter((s) => s.cloudId)}
+          onBack={() => setView('dashboard')}
+          onWcaIdSaved={(id) => setMe((m) => (m ? { ...m, wca_id: id } : m))}
+          onHandleSaved={(h, pn) => setMe((m) => (m ? { ...m, handle: h, public_name: pn } : m))}
+          onToggleSessionPublic={toggleSessionPublic}
+          onLogout={handleLogout}
+        />
+      </div>
+    )
+  }
+
   if (sessions.length === 0) {
     return (
       <div className="min-h-screen w-full bg-gray-900 text-white flex flex-col items-center justify-center px-4 gap-6">
+        {authModal}
         <h1 className="text-5xl font-extrabold">SolveStat</h1>
         <p className="text-gray-300 text-sm">
           Drop your <code>.csv</code> file below to view your solve times 📊
@@ -447,6 +582,22 @@ export default function App() {
         <div className="w-full max-w-md">
           <UploadFile onUpload={handleUpload} />
         </div>
+        {authEnabled && (
+          user ? (
+            <p className="text-gray-400 text-sm">
+              Signed in as {me?.name || user.email}
+              {cloudBusy ? ' · loading your sessions…' : ''} ·{' '}
+              <button onClick={handleLogout} className="text-blue-400 hover:text-blue-300">Sign out</button>
+            </p>
+          ) : (
+            <button
+              onClick={() => setShowAuth(true)}
+              className="text-sm px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition"
+            >
+              ☁️ Sign in to save your sessions
+            </button>
+          )
+        )}
         <footer className="text-xs text-gray-600 pt-6">
           Made by Jimbo • 💾 Your data stays private
         </footer>
@@ -456,7 +607,14 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen bg-gray-900 text-white">
+      {authModal}
       <Sidebar
+        authEnabled={authEnabled}
+        user={user}
+        me={me}
+        onSignIn={() => setShowAuth(true)}
+        onProfile={() => setView('profile')}
+        onLogout={handleLogout}
         stats={activeSession?.stats}
         activeSession={activeSession}
         chartTypes={chartTypes}
@@ -471,7 +629,6 @@ export default function App() {
         setSubXTarget={setSubXTarget}
         dataType={dataType}
         setDataType={setDataType}
-        customAoX={customAoX}
         setCustomAoX={setCustomAoX}
         customAoXInput={customAoXInput}
         setCustomAoXInput={setCustomAoXInput}
@@ -506,6 +663,18 @@ export default function App() {
         <div className="flex-1 p-6 overflow-auto">
           {activeSession ? (
             <div className="flex flex-col gap-4">
+              {user && !activeSession.cloudId && (
+                <div className="bg-gray-800 border-l-4 border-blue-500 rounded-lg p-3 flex items-center justify-between gap-3">
+                  <span className="text-sm text-gray-300">This session isn’t saved to your account.</span>
+                  <button
+                    onClick={() => saveSessionToCloud(activeTab)}
+                    disabled={cloudBusy}
+                    className="text-sm px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-white whitespace-nowrap transition"
+                  >
+                    {cloudBusy ? 'Saving…' : 'Save to cloud'}
+                  </button>
+                </div>
+              )}
               <div className="bg-gray-800 rounded-xl p-6">
                 {chartTypes.includes('line') && (
                   <SolveChart
@@ -553,6 +722,7 @@ export default function App() {
   <WCAPanel
     session={{ ...activeSession, solves: chartSolves }}
     rawSolves={filteredSolves}
+    defaultWcaId={me?.wca_id || ''}
   />
 )}
             </div>

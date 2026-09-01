@@ -87,7 +87,9 @@ function CompetitionTab({ session, rawSolves }) {
   const [simError, setSimError] = useState(null)
   const [useRawSingles, setUseRawSingles] = useState(false)
   const [includeDnf, setIncludeDnf] = useState(false)
+  const [mode, setMode] = useState('past') // 'past' | 'upcoming'
 
+  const isPsych = !!compResults?.is_psych_sheet
   const isAoXMode = session.solves.some((s) => s.windowSolves !== undefined && s.windowSolves !== null)
 
   const rawValidTimes = (includeDnf ? rawSolves : rawSolves.filter((s) => s.penalty !== 'dnf'))
@@ -98,15 +100,27 @@ function CompetitionTab({ session, rawSolves }) {
   const currentLabel = isAoXMode ? 'averages' : 'singles'
 
   useEffect(() => {
+    let cancelled = false
     const loadRecent = async () => {
+      setRecentLoading(true)
+      setSearchResults([])
+      setSearchError(null)
+      setSelectedComp(null)
+      setCompResults(null)
+      setSimResult(null)
       try {
-        const res = await axios.get(`${API}/wca/competitions/search`)
-        setRecentComps(res.data)
-      } catch { }
-      setRecentLoading(false)
+        const res = await axios.get(`${API}/wca/competitions/search`, {
+          params: mode === 'upcoming' ? { upcoming: true } : {},
+        })
+        if (!cancelled) setRecentComps(res.data)
+      } catch {
+        if (!cancelled) setRecentComps([])
+      }
+      if (!cancelled) setRecentLoading(false)
     }
     loadRecent()
-  }, [])
+    return () => { cancelled = true }
+  }, [mode])
 
   const searchComps = async () => {
     if (!query.trim()) return
@@ -117,7 +131,9 @@ function CompetitionTab({ session, rawSolves }) {
     setCompResults(null)
     setSimResult(null)
     try {
-      const res = await axios.get(`${API}/wca/competitions/search`, { params: { query } })
+      const res = await axios.get(`${API}/wca/competitions/search`, {
+        params: mode === 'upcoming' ? { query, upcoming: true } : { query },
+      })
       setSearchResults(res.data)
       if (res.data.length === 0) setSearchError('No competitions found.')
     } catch {
@@ -142,15 +158,22 @@ function CompetitionTab({ session, rawSolves }) {
     setCompResults(null)
     setSimResult(null)
     try {
-      const params = roundId ? { round_id: roundId } : {}
-      const res = await axios.get(
-        `${API}/wca/competitions/${selectedComp.id}/results/${selectedEvent}`,
-        { params }
-      )
+      let res
+      if (mode === 'upcoming') {
+        res = await axios.get(
+          `${API}/wca/competitions/${selectedComp.id}/psych-sheet/${selectedEvent}`
+        )
+      } else {
+        const params = roundId ? { round_id: roundId } : {}
+        res = await axios.get(
+          `${API}/wca/competitions/${selectedComp.id}/results/${selectedEvent}`,
+          { params }
+        )
+      }
       setCompResults(res.data)
       setSelectedRound(res.data.round)
     } catch (err) {
-      setCompError(err.response?.data?.detail ?? 'Failed to fetch competition results.')
+      setCompError(err.response?.data?.detail ?? 'Failed to fetch competition data.')
     }
     setCompLoading(false)
   }
@@ -168,6 +191,8 @@ function CompetitionTab({ session, rawSolves }) {
         n_simulations: 10000,
         solve_count: EVENT_SOLVE_COUNTS[selectedEvent] ?? 5,
         next_round_count: compResults.next_round_count ?? null,
+        // Psych-sheet fields are lifetime PBs, so vary each competitor per trial.
+        opponent_cv: compResults.is_psych_sheet ? 0.06 : 0,
       })
       setSimResult(res.data)
     } catch (err) {
@@ -215,13 +240,33 @@ function CompetitionTab({ session, rawSolves }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex gap-2">
+        {[
+          { id: 'past', label: '📅 Past competitions' },
+          { id: 'upcoming', label: '🔮 Upcoming (psych sheet)' },
+        ].map(({ id, label }) => (
+          <button key={id} onClick={() => { setMode(id); setQuery('') }}
+            className={`text-xs px-3 py-1.5 rounded-lg transition ${
+              mode === id ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex flex-col gap-3">
         <h3 className="text-xs text-gray-400 uppercase tracking-widest">1. Find a Competition</h3>
+        {mode === 'upcoming' && (
+          <p className="text-gray-500 text-xs">
+            Ranks accepted registrants by their lifetime PB average for the event — a “best case,
+            everyone hits their PB” field. Newcomers with no PB for the event are excluded.
+          </p>
+        )}
         <div className="flex gap-2">
           <input
             type="text" value={query} onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && searchComps()}
-            placeholder="Search competitions... (or scroll for recent)"
+            placeholder={mode === 'upcoming' ? 'Search upcoming competitions...' : 'Search competitions... (or scroll for recent)'}
             className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none flex-1"
           />
           <button onClick={searchComps} disabled={searchLoading || !query.trim()}
@@ -232,13 +277,15 @@ function CompetitionTab({ session, rawSolves }) {
         {searchError && <p className="text-red-400 text-xs">{searchError}</p>}
         <div className="flex flex-col gap-1 max-h-56 overflow-y-auto border border-gray-700 rounded-lg p-1">
           {recentLoading && searchResults.length === 0 ? (
-            <p className="text-gray-500 text-xs px-3 py-2">Loading recent competitions...</p>
+            <p className="text-gray-500 text-xs px-3 py-2">Loading competitions...</p>
           ) : displayResults.length === 0 ? (
             <p className="text-gray-500 text-xs px-3 py-2">No competitions found.</p>
           ) : (
             <>
               <p className="text-xs text-gray-500 px-2 py-1">
-                {searchResults.length > 0 ? 'Search results' : 'Recent past competitions'}
+                {searchResults.length > 0
+                  ? 'Search results'
+                  : mode === 'upcoming' ? 'Upcoming competitions' : 'Recent past competitions'}
               </p>
               {displayResults.map((comp) => (
                 <button key={comp.id} onClick={() => selectComp(comp)}
@@ -272,13 +319,15 @@ function CompetitionTab({ session, rawSolves }) {
           </div>
           <button onClick={() => fetchResults(null)} disabled={compLoading}
             className="px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm rounded-lg transition w-fit">
-            {compLoading ? 'Loading results...' : 'Load Competition Results'}
+            {compLoading
+              ? 'Loading...'
+              : mode === 'upcoming' ? 'Load Psych Sheet' : 'Load Competition Results'}
           </button>
           {compError && <p className="text-red-400 text-xs">{compError}</p>}
         </div>
       )}
 
-      {compResults && compResults.rounds && compResults.rounds.length > 1 && (
+      {compResults && !isPsych && compResults.rounds && compResults.rounds.length > 1 && (
         <div className="flex flex-col gap-2">
           <h3 className="text-xs text-gray-400 uppercase tracking-widest">3. Select Round</h3>
           <div className="flex flex-wrap gap-2">
@@ -297,27 +346,44 @@ function CompetitionTab({ session, rawSolves }) {
         </div>
       )}
 
+      {compResults && isPsych && (
+        <div className="bg-gray-900 rounded-lg p-3 flex flex-col gap-1 text-xs text-gray-400">
+          <span>
+            Field: <span className="text-white">{compResults.competitor_count}</span> ranked registrant{compResults.competitor_count !== 1 ? 's' : ''} for {EVENT_LABELS[selectedEvent] ?? selectedEvent}
+            {compResults.unranked_count > 0 && <> · {compResults.unranked_count} newcomer{compResults.unranked_count !== 1 ? 's' : ''} without a PB excluded</>}
+          </span>
+          <span>
+            {compResults.rounds?.length > 1 ? `${compResults.rounds.length} rounds scheduled` : 'Single round'}
+            {compResults.next_round_count ? ` · top ${compResults.next_round_count} advance past round 1` : ''}
+          </span>
+        </div>
+      )}
+
       {compResults && (
         <div className="flex flex-col gap-3">
           <h3 className="text-xs text-gray-400 uppercase tracking-widest">
-            {compResults.rounds && compResults.rounds.length > 1 ? '4.' : '3.'} Simulate Placement
+            {compResults.rounds && compResults.rounds.length > 1 && !isPsych ? '4.' : '3.'} Simulate Placement
           </h3>
           <div className="bg-gray-900 rounded-lg p-3 flex flex-col gap-1">
             <p className="text-sm text-white font-medium">{selectedComp.name}</p>
             <p className="text-xs text-gray-400">
-              {EVENT_LABELS[selectedEvent]} · {compResults.rounds?.find(r => r.id === selectedRound)?.label ?? 'Final'} ·
+              {EVENT_LABELS[selectedEvent]} · {isPsych ? 'Psych sheet' : (compResults.rounds?.find(r => r.id === selectedRound)?.label ?? 'Final')} ·
               {compResults.competitor_count} competitors ·
-              Winner: {compResults.competitors[0]?.name} ({compResults.competitors[0]?.average}s)
+              {isPsych ? 'Top seed' : 'Winner'}: {compResults.competitors[0]?.name} ({compResults.competitors[0]?.average}s)
             </p>
           </div>
           <div className="flex flex-col gap-1 max-h-48 overflow-y-auto">
-            <p className="text-xs text-gray-500 mb-1">All {compResults.competitors.length} results:</p>
+            <p className="text-xs text-gray-500 mb-1">
+              {isPsych ? `Psych sheet — ${compResults.competitors.length} ranked by PB average:` : `All ${compResults.competitors.length} results:`}
+            </p>
             {compResults.competitors.map((c, i) => (
               <div key={i} className="flex justify-between items-center bg-gray-900 rounded px-3 py-1.5 text-xs">
                 <span className="text-gray-400 w-6">{i + 1}.</span>
                 <span className="text-white flex-1">{c.name}</span>
                 <span className="text-gray-400 mr-3">{c.country}</span>
-                <span className="text-white font-mono">{c.average}s</span>
+                <span className="text-white font-mono">
+                  {c.average}s{isPsych && c.has_average === false && <span className="text-gray-500"> (single)</span>}
+                </span>
               </div>
             ))}
           </div>
@@ -369,6 +435,13 @@ function CompetitionTab({ session, rawSolves }) {
               : `📊 Projected Place ${simResult.median_place} of ${simResult.n_competitors}`}
             text={simResult.interpretation}
           />
+          {isPsych && (
+            <p className="text-xs text-gray-500">
+              Field is each registrant’s lifetime PB average, varied ±6% per trial for day-to-day
+              form. Most competitors average slower than their PB on the day, so your real
+              placement is likely a bit better than shown.
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-2">
             <StatRow label="Median place" value={`${simResult.median_place} / ${simResult.n_competitors}`} highlight />
             <StatRow label="Mean place" value={`${simResult.mean_place} / ${simResult.n_competitors}`} />
@@ -409,8 +482,8 @@ function CompetitionTab({ session, rawSolves }) {
   )
 }
 
-function ProfileTab({ session, rawSolves }) {
-  const [yourWcaId, setYourWcaId] = useState('')
+function ProfileTab({ session, rawSolves, defaultWcaId = '' }) {
+  const [yourWcaId, setYourWcaId] = useState(defaultWcaId || '')
   const [yourProfile, setYourProfile] = useState(null)
   const [yourLoading, setYourLoading] = useState(false)
   const [yourError, setYourError] = useState(null)
@@ -430,6 +503,10 @@ function ProfileTab({ session, rawSolves }) {
   const [pbRecentN, setPbRecentN] = useState('')
   const [useRawSingles, setUseRawSingles] = useState(false)
   const [includeDnf, setIncludeDnf] = useState(false)
+
+  useEffect(() => {
+    if (defaultWcaId) setYourWcaId((prev) => prev || defaultWcaId)
+  }, [defaultWcaId])
 
   const isAoXMode = session.solves.some((s) => s.windowSolves !== undefined && s.windowSolves !== null)
 
@@ -744,7 +821,7 @@ function ProfileTab({ session, rawSolves }) {
   )
 }
 
-export default function WCAPanel({ session, rawSolves = [] }) {
+export default function WCAPanel({ session, rawSolves = [], defaultWcaId = '' }) {
   const [activeTab, setActiveTab] = useState('competition')
 
   return (
@@ -767,7 +844,7 @@ export default function WCAPanel({ session, rawSolves = [] }) {
         ))}
       </div>
       {activeTab === 'competition' && <CompetitionTab session={session} rawSolves={rawSolves} />}
-      {activeTab === 'profile' && <ProfileTab session={session} rawSolves={rawSolves} />}
+      {activeTab === 'profile' && <ProfileTab session={session} rawSolves={rawSolves} defaultWcaId={defaultWcaId} />}
     </div>
   )
 }

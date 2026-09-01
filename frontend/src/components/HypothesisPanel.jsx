@@ -1,19 +1,6 @@
 import { useState, useMemo } from 'react'
 import axios from 'axios'
-import {
-  Chart as ChartJS,
-  LineElement,
-  BarElement,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  Tooltip,
-  Legend,
-  Filler,
-} from 'chart.js'
-import { Bar, Line } from 'react-chartjs-2'
-
-ChartJS.register(LineElement, BarElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend, Filler)
+import { computeAoXTimes } from '../lib/aox'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -59,26 +46,8 @@ function ReadMore({ children }) {
   )
 }
 
-function computeAoX(solves, x) {
-  const drop = Math.ceil(0.05 * x)
-  const result = []
-  for (let i = 0; i < solves.length; i++) {
-    if (i < x - 1) { result.push(null); continue }
-    const window = solves.slice(i - x + 1, i + 1)
-    const dnfCount = window.filter((s) => s.penalty === 'dnf').length
-    if (dnfCount > drop) { result.push(null); continue }
-    const times = window.map((s) => s.time).sort((a, b) => a - b)
-    const trimmed = times.slice(drop, times.length - drop)
-    result.push(parseFloat((trimmed.reduce((a, b) => a + b, 0) / trimmed.length).toFixed(3)))
-  }
-  return result
-}
-
-export default function HypothesisPanel({ session, rawSolves = [], allSessions = [], activeTest }) {
-  const [target, setTarget] = useState('')
+export default function HypothesisPanel({ rawSolves = [], allSessions = [], activeTest }) {
   const [inputTime, setInputTime] = useState('')
-  const [subX, setSubX] = useState('')
-  const [trendTarget, setTrendTarget] = useState('')
   const [bootstrapTarget, setBootstrapTarget] = useState('')
   const [sessionA, setSessionA] = useState(0)
   const [sessionB, setSessionB] = useState(1)
@@ -101,8 +70,7 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
       return baseSolves.map((s) => s.time).filter(Boolean)
     }
     const x = analysisMode === 'ao5' ? 5 : analysisMode === 'ao12' ? 12 : analysisAoX
-    const aoVals = computeAoX(baseSolves, x)
-    return aoVals.filter((v) => v !== null)
+    return computeAoXTimes(baseSolves, x).filter((v) => v !== null)
   }, [analysisMode, analysisAoX, baseSolves])
 
   const solveCount = analysisMode === 'ao5' ? 5 : analysisMode === 'ao12' ? 12 : analysisMode === 'single' ? 1 : analysisAoX
@@ -125,16 +93,7 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
   }
 
   const runTest = () => {
-    if (activeTest === 'onesample') post(`${API}/hypothesis/one-sample/?target=${target}`, validTimes)
-    else if (activeTest === 'outlier') post(`${API}/hypothesis/outlier/?time=${inputTime}`, validTimes)
-    else if (activeTest === 'distribution') {
-      const q = subX ? `?sub_x=${subX}` : ''
-      post(`${API}/analysis/distribution/${q}`, validTimes)
-    }
-    else if (activeTest === 'trend') {
-      const q = trendTarget ? `?target=${trendTarget}` : ''
-      post(`${API}/analysis/trend/${q}`, validTimes)
-    }
+    if (activeTest === 'outlier') post(`${API}/hypothesis/outlier/?time=${inputTime}`, validTimes)
     else if (activeTest === 'changepoints') {
       post(`${API}/analysis/changepoints/`, validTimes)
     }
@@ -166,7 +125,6 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
   }
 
   const canRun = () => {
-    if (activeTest === 'onesample') return !!target
     if (activeTest === 'outlier') return !!inputTime
     if (activeTest === 'bootstrap') return !!bootstrapTarget
     if (activeTest === 'abtest') return allSessions.length >= 2 && sessionA !== sessionB
@@ -224,31 +182,17 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
       </div>
 
       {/* Forms */}
-      {activeTest === 'onesample' && (
-        <div className="flex flex-col gap-3">
-          <p className="text-gray-400 text-sm">
-            One-sample t-test: is your mean significantly under a target? Includes a power analysis
-            estimating how many solves you need for a conclusive answer.
-          </p>
-          <div className="flex items-center gap-3">
-            <label className="text-gray-400 text-sm shrink-0">Target time (s)</label>
-            <input type="number" step="0.01" value={target} onChange={(e) => setTarget(e.target.value)}
-              placeholder="e.g. 10" className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
-          </div>
-        </div>
-      )}
-
       {activeTest === 'outlier' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
             Test whether a specific time is statistically unusual given your {modeLabel}.
           </p>
           <ReadMore>
-  <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Takes your solve history and randomly draws 10,000 times from it (with replacement). It asks: how often does a random draw land as extreme as the time you entered?</p>
-  <p className="mb-2"><strong className="text-gray-300">The p-value:</strong> If p &lt; 0.05, the time is a statistical outlier — it would rarely happen by chance given your normal performance. If p is large, the time is within your normal range.</p>
-  <p className="mb-2"><strong className="text-gray-300">Two-tailed vs one-tail:</strong> The reported p-value is two-tailed (tests both unusually fast AND slow). The one-tail p only tests the relevant direction — use this if you specifically want to know "is this unusually fast?"</p>
-  <p className="mb-2"><strong className="text-gray-300">Percentile:</strong> What fraction of your solves are at or below this time. A PB would be near the 0th percentile; a terrible solve near the 100th.</p>
-  <p><strong className="text-gray-300">Example:</strong> You enter your PB of 5.22s. Only 0.1% of random draws from your history are that fast → p = 0.002 → this is a genuine statistical outlier, not a fluke of the test.</p>
+  <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Compares the time you enter against your whole solve history and computes exactly what fraction of your solves are at least that extreme.</p>
+  <p className="mb-2"><strong className="text-gray-300">The p-value:</strong> Two-tailed. If p &lt; 0.05, the time is a statistical outlier — it would rarely happen given your normal performance. If p is large, it's within your normal range.</p>
+  <p className="mb-2"><strong className="text-gray-300">One-tail p:</strong> Only tests the relevant direction — use it if you specifically want "is this unusually fast?"</p>
+  <p className="mb-2"><strong className="text-gray-300">Percentile:</strong> Fraction of your solves at or below this time. A PB sits near 0%, a disaster near 100%.</p>
+  <p><strong className="text-gray-300">Example:</strong> You enter your PB of 5.22s. 0.1% of your solves are that fast → two-tailed p = 0.002 → a genuine statistical outlier.</p>
 </ReadMore>
           <div className="flex items-center gap-3">
             <label className="text-gray-400 text-sm shrink-0">Time (s)</label>
@@ -259,46 +203,17 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
         </div>
       )}
 
-      {activeTest === 'distribution' && (
-        <div className="flex flex-col gap-3">
-          <p className="text-gray-400 text-sm">
-            Fits a lognormal distribution to your {modeLabel} and overlays it on a histogram.
-            Optionally estimate your probability of going sub-X.
-          </p>
-          <div className="flex items-center gap-3">
-            <label className="text-gray-400 text-sm shrink-0">Sub-X probability (s, optional)</label>
-            <input type="number" step="0.01" value={subX} onChange={(e) => setSubX(e.target.value)}
-              placeholder="e.g. 9" className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
-          </div>
-        </div>
-      )}
-
-      {activeTest === 'trend' && (
-        <div className="flex flex-col gap-3">
-          <p className="text-gray-400 text-sm">
-            Fits a log-linear regression to your {modeLabel} over time, with a 95% confidence band.
-            Optionally forecast when you'll reach a target.
-          </p>
-          <div className="flex items-center gap-3">
-            <label className="text-gray-400 text-sm shrink-0">Forecast target (s, optional)</label>
-            <input type="number" step="0.01" value={trendTarget} onChange={(e) => setTrendTarget(e.target.value)}
-              placeholder="e.g. 9" className="bg-gray-700 text-white text-sm px-3 py-2 rounded-lg outline-none w-32" />
-          </div>
-        </div>
-      )}
-
       {activeTest === 'changepoints' && (
         <div className="flex flex-col gap-3">
           <p className="text-gray-400 text-sm">
             Automatically detect when your {modeLabel} significantly shifted over time.
           </p>
           <ReadMore>
-  <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Uses the PELT algorithm (Pruned Exact Linear Time) to automatically find points in your solve history where your performance level genuinely shifted — e.g. when you learned a new method, started practicing more, or hit a plateau.</p>
-  <p className="mb-2"><strong className="text-gray-300">How PELT works:</strong> It tries every possible way to divide your solves into segments and finds the one that minimizes total variance within each segment. Adding a new breakpoint costs a penalty, so it only adds one if the performance shift is statistically significant enough to justify it.</p>
-  <p className="mb-2"><strong className="text-gray-300">The penalty:</strong> The penalty is set to 3 × log(n) × variance, which is stricter than BIC — this means it won't over-segment your data and only detects genuine phase changes, not random fluctuations.</p>
-  <p className="mb-2"><strong className="text-gray-300">Different from trend analysis:</strong> Trend analysis fits a smooth curve to your whole session. Changepoint detection finds abrupt shifts — "you were averaging 12s, then suddenly 10s from solve 300 onwards."</p>
-  <p className="mb-2"><strong className="text-gray-300">In Ao5 mode:</strong> Changepoints on Ao5 data are more meaningful — they smooth out individual lucky/unlucky solves and reveal genuine shifts in your average performance level.</p>
-  <p><strong className="text-gray-300">Caveat:</strong> Breakpoints are statistical, not guaranteed to match real events. The most meaningful result is when a detected boundary lines up with something you actually remember — learning F2L, a new lookahead technique, etc.</p>
+  <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Uses the PELT algorithm (Pruned Exact Linear Time) to find points in your solve history where your performance level genuinely shifted — learning a new method, ramping up practice, hitting a plateau.</p>
+  <p className="mb-2"><strong className="text-gray-300">How PELT works:</strong> It searches over every way to divide your solves into segments and picks the one minimizing total within-segment variance. Each extra breakpoint costs a penalty, so one is only added when the shift is large enough to justify it.</p>
+  <p className="mb-2"><strong className="text-gray-300">The penalty:</strong> Scales with log(n) and the estimated solve-to-solve noise (measured from successive differences, which isn't inflated by the shifts themselves). This is a BIC-style criterion — it flags genuine phase changes, not random noise.</p>
+  <p className="mb-2"><strong className="text-gray-300">In Ao5 mode:</strong> Changepoints on Ao5 data are cleaner — they smooth out individual lucky/unlucky solves and reveal shifts in your average level.</p>
+  <p><strong className="text-gray-300">Caveat:</strong> Breakpoints are statistical, not guaranteed to match real events. The most meaningful result is when a boundary lines up with something you actually remember.</p>
 </ReadMore>
         </div>
       )}
@@ -309,12 +224,10 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
             Estimate your true probability of going sub-X on your {modeLabel}, with a 95% confidence interval.
           </p>
           <ReadMore>
-  <p className="mb-2"><strong className="text-gray-300">What it does:</strong> Estimates your true probability of going sub-X by resampling your solve history 10,000 times and measuring how often the resampled set beats the target.</p>
-  <p className="mb-2"><strong className="text-gray-300">Single mode:</strong> Directly measures what fraction of your individual solves are under the target, then bootstraps that rate to give a confidence interval. Good for "how often do I go sub-8s on a single solve?"</p>
-  <p className="mb-2"><strong className="text-gray-300">Average mode (Ao5/Ao12/AoX):</strong> Simulates full averages by sampling the right number of solves, applying WCA trimming (drop best and worst for Ao5/Ao12), and checking if the result beats the target. This is more realistic for competition prep — it answers "how often would I get a sub-10s Ao5 at a competition?"</p>
-  <p className="mb-2"><strong className="text-gray-300">Why not just count?</strong> Counting gives the empirical rate, but that number has uncertainty — especially with fewer solves. Bootstrap quantifies that uncertainty as a 95% confidence interval. If your CI is [22%, 28%], you can be 95% confident your true rate is in that range.</p>
-  <p className="mb-2"><strong className="text-gray-300">Bootstrap SE:</strong> The standard error — how much your rate would typically vary across different sets of solves. Smaller SE means a more precise estimate, which comes from having more solves.</p>
-  <p><strong className="text-gray-300">Example:</strong> Sub-8.9 rate is 25.5%, CI [24.8%, 26.3%]. This is tight — 13,000 solves give a very precise estimate. With only 200 solves the CI might be [18%, 33%], much wider.</p>
+  <p className="mb-2"><strong className="text-gray-300">Single mode:</strong> Counts what fraction of your individual solves are under the target, then puts a <strong className="text-gray-300">Wilson score interval</strong> around that rate. Wilson stays sensible even when the rate is near 0% or 100% — with 0 sub-8 solves it still gives a real upper bound instead of claiming "exactly 0%".</p>
+  <p className="mb-2"><strong className="text-gray-300">Average mode (Ao5/Ao12/AoX):</strong> Simulates full averages by sampling the right number of solves 10,000 times, applying WCA trimming (drop best and worst for Ao5/Ao12), and checking how often the result beats the target. More realistic for competition prep — "how often would I get a sub-10s Ao5?"</p>
+  <p className="mb-2"><strong className="text-gray-300">Why not just count?</strong> The raw rate has uncertainty, especially with fewer solves. The interval quantifies it: a CI of [22%, 28%] means you can be 95% confident your true rate is in that range.</p>
+  <p><strong className="text-gray-300">Example:</strong> Sub-8.9 rate is 25.5%, CI [24.8%, 26.3%] — tight, because 13,000 solves give a precise estimate. With 200 solves it might be [18%, 33%].</p>
 </ReadMore>
           <div className="flex items-center gap-3">
             <label className="text-gray-400 text-sm shrink-0">Target time (s)</label>
@@ -415,8 +328,8 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
         <>
           <Banner tone="info"
             title={result.ao_label
-              ? `Bootstrap Sub-${result.target}s ${result.ao_label} Probability`
-              : `Bootstrap Sub-X Probability`}
+              ? `Sub-${result.target}s ${result.ao_label} Probability`
+              : `Sub-${result.target}s Probability`}
             text={result.interpretation}
           />
           <div className="mt-4 mb-2">
@@ -461,29 +374,11 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
               </>
             ) : (
               <>
-                <StatRow label="95% CI lower" value={`${(result.ci_low * 100).toFixed(1)}%`} />
-                <StatRow label="95% CI upper" value={`${(result.ci_high * 100).toFixed(1)}%`} />
-                <StatRow label="Bootstrap SE" value={`${(result.bootstrap_std * 100).toFixed(2)}%`} />
+                <StatRow label="95% CI lower (Wilson)" value={`${(result.ci_low * 100).toFixed(1)}%`} />
+                <StatRow label="95% CI upper (Wilson)" value={`${(result.ci_high * 100).toFixed(1)}%`} />
+                <StatRow label="Standard error" value={`${(result.bootstrap_std * 100).toFixed(2)}%`} />
               </>
             )}
-          </div>
-        </>
-      )}
-
-      {result && activeTest === 'onesample' && (
-        <>
-          <Banner
-            tone={result.is_significant ? (result.is_under ? 'good' : 'warn') : 'info'}
-            title={result.is_significant ? (result.is_under ? '✓ Significantly under target' : '⚠️ Significantly over target') : 'Inconclusive'}
-            text={result.interpretation}
-          />
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4">
-            <StatRow label="Mean" value={`${result.mean}s`} />
-            <StatRow label="T-statistic" value={result.t_statistic} />
-            <StatRow label="P-value" value={result.p_value} />
-            <StatRow label="95% CI" value={`[${result.confidence_interval[0]}, ${result.confidence_interval[1]}]`} />
-            {result.required_n && <StatRow label="Solves needed (80% power)" value={result.required_n} />}
-            {result.additional_solves > 0 && <StatRow label="Additional solves" value={result.additional_solves} />}
           </div>
         </>
       )}
@@ -504,97 +399,7 @@ export default function HypothesisPanel({ session, rawSolves = [], allSessions =
             <StatRow label="Std dev" value={`${result.session_std}s`} />
             <StatRow label="P-value (two-tailed)" value={result.p_value} />
             <StatRow label="One-tail p" value={result.one_tail_p} />
-            <StatRow label="Permutations" value={result.n_permutations.toLocaleString()} />
-          </div>
-        </>
-      )}
-
-      {result && activeTest === 'distribution' && (
-        <>
-          <Banner tone="info" title={`Best fit: ${result.better_fit}`} text={result.interpretation} />
-          {result.sub_x && (
-            <Banner tone="good" title={`Sub-${result.sub_x.target} probability`} text={result.sub_x.interpretation} />
-          )}
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4 mb-6">
-            <StatRow label="μ (log-scale)" value={result.mu} />
-            <StatRow label="σ (log-scale)" value={result.sigma} />
-            <StatRow label="Model median" value={`${result.median}s`} />
-            <StatRow label="N" value={result.n} />
-          </div>
-          <div className="w-full" style={{ height: '320px' }}>
-            <Bar
-              data={{
-                labels: result.histogram.bin_centers,
-                datasets: [
-                  {
-                    type: 'bar',
-                    label: 'Solve count',
-                    data: result.histogram.counts,
-                    backgroundColor: 'rgba(96, 165, 250, 0.45)',
-                    borderWidth: 0,
-                    barPercentage: 1.0,
-                    categoryPercentage: 1.0,
-                  },
-                  {
-                    type: 'line',
-                    label: 'Fitted lognormal (MLE)',
-                    data: result.histogram.fitted_curve,
-                    borderColor: '#f97316',
-                    pointRadius: 0,
-                    tension: 0.3,
-                  },
-                ],
-              }}
-              options={{
-                maintainAspectRatio: false,
-                responsive: true,
-                plugins: { legend: { labels: { color: '#d1d5db' } } },
-                scales: {
-                  x: { ticks: { color: '#9ca3af', maxTicksLimit: 12 }, grid: { display: false }, title: { display: true, text: 'Time (s)', color: '#9ca3af' } },
-                  y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Count', color: '#9ca3af' } },
-                },
-              }}
-            />
-          </div>
-        </>
-      )}
-
-      {result && activeTest === 'trend' && (
-        <>
-          <Banner
-            tone={result.is_improving ? 'good' : 'info'}
-            title={result.is_improving ? '✓ Statistically significant improvement' : 'Trend'}
-            text={result.interpretation}
-          />
-          {result.forecast && (
-            <Banner tone={result.forecast.reached ? 'good' : 'info'} title="Forecast" text={result.forecast.interpretation} />
-          )}
-          <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4 mb-6">
-            <StatRow label="Change per 100 solves" value={`${result.pct_change_per_100}%`} />
-            <StatRow label="R²" value={result.r_squared} />
-            <StatRow label="P-value" value={result.p_value} />
-            {result.forecast?.solves_needed && <StatRow label="Solves to target" value={result.forecast.solves_needed} />}
-          </div>
-          <div className="w-full" style={{ height: '320px' }}>
-            <Line
-              data={{
-                labels: result.curve.x,
-                datasets: [
-                  { label: '95% CI upper', data: result.curve.upper, borderColor: 'transparent', pointRadius: 0, fill: false },
-                  { label: '95% CI lower', data: result.curve.lower, borderColor: 'transparent', backgroundColor: 'rgba(52, 211, 153, 0.15)', pointRadius: 0, fill: '-1' },
-                  { label: 'Fitted trend', data: result.curve.trend, borderColor: '#34d399', pointRadius: 0, tension: 0.2 },
-                ],
-              }}
-              options={{
-                maintainAspectRatio: false,
-                responsive: true,
-                plugins: { legend: { labels: { color: '#d1d5db', filter: (item) => !item.text.includes('CI') } } },
-                scales: {
-                  x: { ticks: { color: '#9ca3af', maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Solve number', color: '#9ca3af' } },
-                  y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'Time (s)', color: '#9ca3af' } },
-                },
-              }}
-            />
+            <StatRow label="Solves compared" value={result.n_solves.toLocaleString()} />
           </div>
         </>
       )}

@@ -13,6 +13,7 @@ import {
 import zoomPlugin from 'chartjs-plugin-zoom'
 import annotationPlugin from 'chartjs-plugin-annotation'
 import { Line, Bar } from 'react-chartjs-2'
+import { computeAoX, aoWindowStats } from '../lib/aox'
 
 ChartJS.register(
   LineElement, BarElement, CategoryScale, LinearScale,
@@ -27,27 +28,10 @@ function SolveModal({ solve, onClose }) {
   if (solve.windowSolves) {
     const x = solve.windowSolves.length
     const drop = Math.ceil(0.05 * x)
-    const sortedTimes = [...solve.windowSolves]
-      .map((s) => s.time)
-      .sort((a, b) => a - b)
-
-    const bestCount = {}
-    const worstCount = {}
-
-    const isTrimmed = (time) => {
-      const key = String(time)
-      const inBest = sortedTimes.slice(0, drop).filter((t) => String(t) === key).length
-      const inWorst = sortedTimes.slice(sortedTimes.length - drop).filter((t) => String(t) === key).length
-      if (inBest > 0) {
-        bestCount[key] = (bestCount[key] || 0) + 1
-        if (bestCount[key] <= inBest) return true
-      }
-      if (inWorst > 0) {
-        worstCount[key] = (worstCount[key] || 0) + 1
-        if (worstCount[key] <= inWorst) return true
-      }
-      return false
-    }
+    const trimmedSet = new Set(
+      solve.windowTrimmed ?? aoWindowStats(solve.windowSolves).trimmedIndices
+    )
+    const isTrimmed = (_time, i) => trimmedSet.has(i)
 
     return (
       <div
@@ -77,7 +61,7 @@ function SolveModal({ solve, onClose }) {
 
           <div className="flex flex-col gap-3">
             {solve.windowSolves.map((s, i) => {
-              const trimmed = isTrimmed(s.time)
+              const trimmed = isTrimmed(s.time, i)
               return (
                 <div
                   key={i}
@@ -767,39 +751,29 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
 
   const datasets = [baseDataset]
 
-  const computeAoXTimes = (sessionSolves, x) => {
-    const drop = Math.ceil(0.05 * x)
-    const result = []
-    for (let i = 0; i < sessionSolves.length; i++) {
-      if (i < x - 1) { result.push(null); continue }
-      const window = sessionSolves.slice(i - x + 1, i + 1)
-      const dnfCount = window.filter((s) => s.penalty === 'dnf').length
-      if (dnfCount > drop) { result.push(null); continue }
-      const times = window.map((s) => s.time).sort((a, b) => a - b)
-      const trimmed = times.slice(drop, times.length - drop)
-      result.push(parseFloat((trimmed.reduce((a, b) => a + b, 0) / trimmed.length).toFixed(3)))
-    }
-    return result
-  }
+  const overlayX = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
 
   overlaySessions.forEach((s, i) => {
     const color = overlayColors[i % overlayColors.length]
     let data
     let sessionSolves
+    let sessionPointColors
     if (dataType === 'single') {
-      sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
+      sessionSolves = s.solves
       data = sessionSolves.map((sv) => sv.time)
+      sessionPointColors = sessionSolves.map((sv) => {
+        if (sv.penalty === 'dnf') return '#ef4444'
+        if (!isAverage && sv.penalty === 'plus2') return '#eab308'
+        return color
+      })
     } else {
-      const x = dataType === 'ao5' ? 5 : dataType === 'ao12' ? 12 : customAoX
-      sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
-      data = computeAoXTimes(sessionSolves, x)
+      // AoX over the full solve sequence (DNFs kept in place so windows match
+      // the active session), then drop the warm-up windows for alignment.
+      const ao = computeAoX(s.solves, overlayX).slice(overlayX - 1)
+      sessionSolves = s.solves.slice(overlayX - 1)
+      data = ao.map((e) => e.time)
+      sessionPointColors = ao.map((e) => (e.isDnf ? '#ef4444' : color))
     }
-
-    const sessionPointColors = sessionSolves.map((sv) => {
-      if (sv.penalty === 'dnf') return '#ef4444'
-      if (!isAverage && sv.penalty === 'plus2') return '#eab308'
-      return color
-    })
 
     datasets.push({
       label: s.name,
@@ -851,9 +825,24 @@ function SolveChart({ solves, showAo5, showAo12, chartType, distOverlays = {}, s
     if (overlayIdx < overlaySessions.length) {
       const s = overlaySessions[overlayIdx]
       const color = overlayColors[overlayIdx % overlayColors.length]
-      const sessionSolves = s.solves.filter((sv) => sv.penalty !== 'dnf')
-      const solve = sessionSolves[index]
-      if (solve) setSelectedSolve({ ...solve, _sessionColor: color, _sessionName: s.name })
+      if (dataType === 'single') {
+        const solve = s.solves[index]
+        if (solve) setSelectedSolve({ ...solve, _sessionColor: color, _sessionName: s.name })
+      } else {
+        const endIdx = index + overlayX - 1
+        const win = s.solves.slice(endIdx - overlayX + 1, endIdx + 1)
+        if (win.length === overlayX) {
+          const stats = aoWindowStats(win, overlayX)
+          setSelectedSolve({
+            time: stats.time,
+            solveNumber: s.solves[endIdx]?.solveNumber,
+            windowSolves: win,
+            windowTrimmed: stats.trimmedIndices,
+            _sessionColor: color,
+            _sessionName: s.name,
+          })
+        }
+      }
     }
   }
 
