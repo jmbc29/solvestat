@@ -9,7 +9,7 @@
 
 ## Overview
 
-SolveStat turns a raw CSV export from a speedcubing timer into an interactive analytics dashboard. It goes beyond basic stats — implementing bootstrap resampling, Monte Carlo simulation, changepoint detection, and distribution fitting to give cubers genuinely useful insight into their performance.
+SolveStat turns a raw CSV export from a speedcubing timer into an interactive analytics dashboard. Besides just basic stats and charts, the website contains features such as bootstrap resampling, Monte Carlo simulation, changepoint detection, and distribution fitting to give cubers genuinely useful insight into their performance.
 
 Built as a portfolio project by [Jimbo Cai](https://github.com/jmbc29), a data science student.
 
