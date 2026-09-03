@@ -23,7 +23,11 @@ def get_db():
     Atlas hiccup at boot doesn't permanently wedge the connection.
     """
     global _client, _db, _indexes_ready
-    uri = os.environ.get("MONGODB_URI")
+    uri = (os.environ.get("MONGODB_URI") or "").strip().strip('"').strip("'")
+    # Tolerate the two env lines being pasted into one field by mistake.
+    for junk in ("\nMONGODB_DB", " MONGODB_DB", "MONGODB_DB="):
+        if junk in uri:
+            uri = uri.split(junk, 1)[0].rstrip()
     if not uri:
         return None
     if _db is None:
