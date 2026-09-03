@@ -1,11 +1,15 @@
 """MongoDB Atlas connection and helpers for user accounts + saved sessions."""
+import logging
 import os
 from datetime import datetime, timezone
 
 from pymongo import MongoClient, ASCENDING
 
+log = logging.getLogger("solvestat.db")
+
 _client = None
 _db = None
+_indexes_ready = False
 
 
 def _now():
@@ -13,24 +17,41 @@ def _now():
 
 
 def get_db():
-    """Lazily create a MongoClient from MONGODB_URI. Returns None if not configured."""
-    global _client, _db
-    if _db is not None:
-        return _db
+    """Lazily create a MongoClient from MONGODB_URI. Returns None if not configured.
+
+    Index creation is best-effort and retried until it succeeds, so a transient
+    Atlas hiccup at boot doesn't permanently wedge the connection.
+    """
+    global _client, _db, _indexes_ready
     uri = os.environ.get("MONGODB_URI")
     if not uri:
         return None
-    _client = MongoClient(uri, appname="SolveStat")
-    _db = _client[os.environ.get("MONGODB_DB", "solvestat")]
-    _db.users.create_index([("uid", ASCENDING)], unique=True)
-    _db.users.create_index([("handle", ASCENDING)], unique=True, sparse=True)
-    _db.sessions.create_index([("uid", ASCENDING)])
-    _db.sessions.create_index([("uid", ASCENDING), ("createdAt", ASCENDING)])
+    if _db is None:
+        _client = MongoClient(uri, appname="SolveStat", serverSelectionTimeoutMS=8000)
+        _db = _client[os.environ.get("MONGODB_DB", "solvestat")]
+    if not _indexes_ready:
+        try:
+            _db.users.create_index([("uid", ASCENDING)], unique=True)
+            _db.users.create_index([("handle", ASCENDING)], unique=True, sparse=True)
+            _db.sessions.create_index([("uid", ASCENDING)])
+            _db.sessions.create_index([("uid", ASCENDING), ("createdAt", ASCENDING)])
+            _indexes_ready = True
+        except Exception:
+            log.exception("Could not create MongoDB indexes")
     return _db
 
 
 def db_available() -> bool:
-    return get_db() is not None
+    """True only if we can actually reach the database."""
+    try:
+        db = get_db()
+        if db is None:
+            return False
+        db.command("ping")
+        return True
+    except Exception:
+        log.exception("MongoDB is not reachable")
+        return False
 
 
 # ─── Users ───────────────────────────────────────────────────────────────────

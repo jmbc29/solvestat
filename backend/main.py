@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
+import logging
 import pandas as pd
 import io
 import json
@@ -11,6 +12,8 @@ from scipy import stats
 import numpy as np
 import ruptures as rpt
 import httpx
+
+logging.basicConfig(level=logging.INFO)
 
 try:
     from dotenv import load_dotenv
@@ -22,6 +25,11 @@ from auth import require_user, firebase_available
 import db
 
 app = FastAPI()
+
+
+@app.get("/")
+async def root():
+    return {"service": "SolveStat API", "ok": True}
 
 app.add_middleware(
     CORSMiddleware,
@@ -1084,8 +1092,16 @@ def _require_db():
 
 @app.get("/config")
 async def config_status():
-    """Lets the frontend know whether cloud features are available."""
-    return {"auth": firebase_available(), "db": db.db_available()}
+    """Lets the frontend know whether cloud features are available. Never errors."""
+    try:
+        auth_ok = firebase_available()
+    except Exception:
+        auth_ok = False
+    try:
+        db_ok = db.db_available()
+    except Exception:
+        db_ok = False
+    return {"auth": auth_ok, "db": db_ok}
 
 
 @app.get("/me")

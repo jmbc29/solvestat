@@ -1,10 +1,13 @@
 """Firebase Admin SDK setup + FastAPI dependency to verify ID tokens."""
 import json
+import logging
 import os
 
 import firebase_admin
 from firebase_admin import auth as fb_auth, credentials
 from fastapi import Depends, HTTPException, Request
+
+log = logging.getLogger("solvestat.auth")
 
 _initialized = False
 
@@ -29,10 +32,23 @@ def _init_firebase():
     )
     cred = None
     if raw:
+        raw = raw.strip()
+        # Some hosts wrap pasted values in quotes; tolerate that.
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ("'", '"'):
+            raw = raw[1:-1]
         try:
-            cred = credentials.Certificate(json.loads(raw))
-        except (json.JSONDecodeError, ValueError) as e:
+            info = json.loads(raw)
+        except json.JSONDecodeError as e:
             raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT is not valid JSON: {e}")
+        # A private_key pasted with literal "\n" instead of real newlines still works
+        # for json.loads, but guard against the reverse (real newlines in the env
+        # value breaking the JSON) by normalising here.
+        if isinstance(info.get("private_key"), str):
+            info["private_key"] = info["private_key"].replace("\\n", "\n")
+        try:
+            cred = credentials.Certificate(info)
+        except Exception as e:
+            raise RuntimeError(f"FIREBASE_SERVICE_ACCOUNT is not a valid service account: {e}")
     elif path and os.path.exists(path):
         cred = credentials.Certificate(path)
 
@@ -47,7 +63,8 @@ def _init_firebase():
 def firebase_available() -> bool:
     try:
         return _init_firebase()
-    except RuntimeError:
+    except Exception:
+        log.exception("Firebase Admin could not be initialised")
         return False
 
 
