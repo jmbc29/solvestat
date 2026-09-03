@@ -13,8 +13,9 @@ guest-only mode (in-memory sessions, no sign-in button).
    - Enable **Google** (pick a support email).
    - Enable **Email/Password**.
 3. **Authorized domains** (Authentication → Settings → Authorized domains): add
-   `localhost` and your Vercel domain
-   `solvestat-jimbo-cais-projects.vercel.app`.
+   `localhost` and your Vercel domain (e.g. `solvestat-topaz.vercel.app`). Use the exact
+   hostname from your browser's address bar, or Google sign-in fails with
+   `auth/unauthorized-domain`.
 4. **Web app config** — Project settings (gear icon) → **General** → *Your apps* →
    add a **Web app** → copy the `firebaseConfig` values into
    `frontend/.env` (see `frontend/.env.example`):
@@ -32,8 +33,9 @@ guest-only mode (in-memory sessions, no sign-in button).
    **Service accounts** → **Generate new private key**. This downloads a JSON file.
    - Local dev: save it as `backend/firebase-service-account.json` (git-ignored) and set
      `FIREBASE_SERVICE_ACCOUNT_FILE=./firebase-service-account.json` in `backend/.env`.
-   - Railway: open the JSON, copy the whole thing onto one line, and set it as the
-     `FIREBASE_SERVICE_ACCOUNT` env var.
+   - Hosted (Render): flatten the JSON to one line and set it as the
+     `FIREBASE_SERVICE_ACCOUNT` env var —
+     `python3 -c "import json;print(json.dumps(json.load(open('backend/firebase-service-account.json'))))"`
 
 ---
 
@@ -41,7 +43,8 @@ guest-only mode (in-memory sessions, no sign-in button).
 
 1. Go to <https://cloud.mongodb.com> → create a **free (M0) cluster**.
 2. **Database Access** → add a database user (username + password).
-3. **Network Access** → add IP `0.0.0.0/0` (Railway has dynamic egress IPs).
+3. **Network Access** → add IP `0.0.0.0/0` (hosted backends have dynamic egress IPs).
+   Wait until the entry shows **Active**, not **Pending**.
 4. **Connect → Drivers** → copy the connection string, insert the password, and set it in
    `backend/.env`:
 
@@ -76,12 +79,27 @@ Check `GET http://localhost:8000/config` → `{"auth": true, "db": true}` once c
 
 ---
 
-## 4. Deploy env vars
+## 4. Deploy
 
-- **Vercel** (frontend): add all `VITE_FIREBASE_*` vars and `VITE_API_URL`
-  (your Railway URL) under Project → Settings → Environment Variables, then redeploy.
-- **Railway** (backend): add `MONGODB_URI`, `MONGODB_DB`, and `FIREBASE_SERVICE_ACCOUNT`
-  (one-line JSON).
+### Backend — Render (free web service)
+
+1. <https://render.com> → **New → Web Service** → connect the GitHub repo.
+2. Root Directory `backend` · Runtime **Python 3** · Build `pip install -r requirements.txt`
+   · Start `uvicorn main:app --host 0.0.0.0 --port $PORT` · Instance type **Free**.
+3. Environment variables: `MONGODB_URI`, `MONGODB_DB=solvestat`, `FIREBASE_SERVICE_ACCOUNT`
+   (one-line JSON). Paste `MONGODB_URI` carefully — a `bad auth` error in the logs means the
+   value is wrong/truncated.
+4. After it deploys, `GET https://<your-service>.onrender.com/config` should return
+   `{"auth": true, "db": true}`.
+
+> The free instance sleeps after ~15 min idle; the first request afterwards takes ~50 s.
+
+### Frontend — Vercel
+
+1. Project → **Settings → Environment Variables**: set `VITE_API_URL` to the Render URL and
+   add the six `VITE_FIREBASE_*` values.
+2. **Redeploy** (Vite bakes env vars in at build time — editing a var alone does nothing).
+3. Add the deployed domain to Firebase → Authentication → Settings → Authorized domains.
 
 ---
 

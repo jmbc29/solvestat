@@ -2,7 +2,7 @@
 
 **A full-stack speedcubing analytics platform** — upload your solve history, explore your performance with statistical analysis, simulate how you'd place at real WCA competitions, and share a public profile.
 
-🔗 **Live demo:** https://solvestat-jimbo-cais-projects.vercel.app  
+🔗 **Live demo:** https://solvestat-topaz.vercel.app  
 🐙 **GitHub:** https://github.com/jmbc29
 
 ---
@@ -78,7 +78,7 @@ Each test runs on raw singles or computed averages, selectable per analysis:
 | Statistics | NumPy, SciPy, ruptures |
 | Database | MongoDB Atlas (users + saved sessions; nothing stored for guests) |
 | External API | WCA REST API v0 + public WCIF |
-| Deployment | Vercel (frontend), Railway (backend) |
+| Deployment | Vercel (frontend), Render (backend) |
 
 ---
 
@@ -108,7 +108,7 @@ Welch's t-test (unequal variance/size), Mann-Whitney U (non-parametric), and Coh
 
 ### Prerequisites
 - Node.js 18+
-- Python 3.10+
+- Python 3.11+
 
 ### Backend
 ```bash
@@ -132,6 +132,19 @@ npm run dev
 Accounts and public profiles need a Firebase project and a MongoDB Atlas cluster.
 Full walkthrough: **[SETUP.md](SETUP.md)**.
 
+### Deployment
+- **Frontend** → Vercel. Framework preset *Vite*, root directory `frontend`. Set
+  `VITE_API_URL` (the backend URL) and the six `VITE_FIREBASE_*` values as environment
+  variables, then redeploy. `frontend/vercel.json` adds the SPA rewrite so `/u/<handle>`
+  deep links resolve.
+- **Backend** → Render (free web service). Root directory `backend`, build
+  `pip install -r requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+  Set `MONGODB_URI`, `MONGODB_DB`, and `FIREBASE_SERVICE_ACCOUNT` (the service-account
+  JSON on one line). The free instance sleeps after ~15 min idle, so the first request
+  after a nap takes ~50 s to wake.
+- Add the deployed frontend domain to Firebase → Authentication → Settings → Authorized
+  domains, or Google sign-in returns `auth/unauthorized-domain`.
+
 ### CSV Format
 Export your solves from [csTimer](https://cstimer.net) as a CSV (semicolon-delimited columns including `Time`, `Date`, `Scramble`, `Comment`). Plain, `+2`, `DNF(...)`, and `MM:SS.xx` time formats are handled. The full csTimer JSON export (**Export → to file**) is also accepted and imports every session at once.
 
@@ -143,6 +156,7 @@ Export your solves from [csTimer](https://cstimer.net) as a CSV (semicolon-delim
 solvestat/
 ├── frontend/          # React + Vite
 │   └── src/
+│       ├── main.jsx                 # entry — routes /u/<handle> to the public page, else the app
 │       ├── App.jsx                  # state management, session handling, cloud sync
 │       ├── api.js                   # axios instance (attaches Firebase ID token) + cloud helpers
 │       ├── firebase.js              # Firebase app/auth init from env
