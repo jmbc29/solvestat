@@ -55,9 +55,9 @@ Each test runs on raw singles or computed averages, selectable per analysis:
 
 <img width="1512" height="827" alt="Screenshot 2026-09-03 at 11 50 11 AM" src="https://github.com/user-attachments/assets/d11d17d6-400f-4238-9785-86668ec51a38" />
 
-<img width="1211" height="682" alt="Screenshot 2026-08-04 at 11 51 14 PM" src="https://github.com/user-attachments/assets/c41bb60a-4bc1-4192-b6f2-2e951e78b731" />
+<img width="1511" height="806" alt="Screenshot 2026-09-03 at 11 51 16 AM" src="https://github.com/user-attachments/assets/7cfc4dfa-fbe7-481a-992b-ff4c8d588124" />
 
-<img width="1208" height="822" alt="Screenshot 2026-08-04 at 11 51 44 PM" src="https://github.com/user-attachments/assets/b51c893b-8c60-45d3-bdd5-91084d0b9184" />
+<img width="1512" height="826" alt="Screenshot 2026-09-03 at 11 51 41 AM" src="https://github.com/user-attachments/assets/c5aea284-389d-4932-8eaa-af22fddb09df" />
 
 ### 👤 Accounts & Sharing *(optional)*
 - **Sign in** with Google or email/password (Firebase Auth). Without Firebase env vars the app runs exactly as before in guest mode — nothing is stored.
